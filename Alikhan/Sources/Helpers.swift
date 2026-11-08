@@ -191,24 +191,16 @@ enum Phone {
         }.value
     }
 
-    @MainActor
-    static func call(_ name: String) async -> Bool {
-        guard let raw = await number(for: name) else { return false }
+    /// Контактіден нөмір тауып, tel: сілтемесін береді (SIM картаны iPhone өзі сұрайды)
+    static func callURL(_ name: String) async -> URL? {
+        guard let raw = await number(for: name) else { return nil }
         let digits = raw.filter { $0.isNumber || $0 == "+" }
-        guard !digits.isEmpty, let url = URL(string: "tel://\(digits)") else { return false }
-        return await UIApplication.shared.open(url)
+        guard !digits.isEmpty else { return nil }
+        return URL(string: "tel://\(digits)")
     }
 
-    /// https://, whatsapp://, tg://, instagram://, maps://, tel: т.б.
-    @MainActor
-    static func open(_ string: String) async -> Bool {
-        guard let url = URL(string: string) else { return false }
-        return await UIApplication.shared.open(url)
-    }
-
-    /// iOS басқа қосымшаның ойнатуын басқаруға рұқсат бермейді: Shortcut арқылы.
-    @MainActor
-    static func runShortcut(_ command: String) async {
+    /// iOS басқа қосымшаның ойнатуын басқаруға не Контактілер сияқты қосымшаны ашуға рұқсат бермейді: «Алихан басқару» Shortcut-ы.
+    static func shortcutURL(_ command: String) -> URL? {
         var c = URLComponents()
         c.scheme = "shortcuts"
         c.host = "x-callback-url"
@@ -220,8 +212,7 @@ enum Phone {
                         // Shortcut жоқ не қате болса, қосымшаға қайтып, дауыспен айтамыз
                         URLQueryItem(name: "x-error", value: "alikhan://shortcut-error"),
                         URLQueryItem(name: "x-cancel", value: "alikhan://")]
-        guard let url = c.url else { return }
-        _ = await UIApplication.shared.open(url)
+        return c.url
     }
 
     static func links(in text: String) -> [URL] {

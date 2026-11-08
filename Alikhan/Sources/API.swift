@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 struct ReminderItem: Decodable, Hashable {
     var title: String
@@ -15,8 +16,9 @@ struct PhoneReply: Decodable {
     var url: String?
     var end: Bool?
     var reminders: [ReminderItem]?
+    var audio_url: String?     // stream=true: дауыс синтезі бөлек сілтемеде, бірден ашамыз
 
-    enum CodingKeys: String, CodingKey { case text, heard, audio, action, arg, url, end, reminders }
+    enum CodingKeys: String, CodingKey { case text, heard, audio, action, arg, url, end, reminders, audio_url }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -27,6 +29,7 @@ struct PhoneReply: Decodable {
         url = try? c.decodeIfPresent(String.self, forKey: .url)
         end = try? c.decodeIfPresent(Bool.self, forKey: .end)
         reminders = try? c.decodeIfPresent([ReminderItem].self, forKey: .reminders)
+        audio_url = try? c.decodeIfPresent(String.self, forKey: .audio_url)
         // arg кейде сан болып келеді (volume: 40)
         if let s = try? c.decodeIfPresent(String.self, forKey: .arg) {
             arg = s
@@ -69,6 +72,11 @@ struct Notice: Decodable {
         capture = try? c.decodeIfPresent(CaptureInfo.self, forKey: .capture)
         task_id = c.flexibleString(.task_id)
     }
+
+    private init(text: String) { voice_text = text; kind = "message" }
+
+    /// Қосымшаның өз хабары (мысалы «Сервер қатесі»)
+    static func local(_ text: String) -> Notice { Notice(text: text) }
 }
 
 /// Қолданушы өз қолымен істейтін тапсырма (GET /asks)
@@ -162,6 +170,34 @@ final class API {
         l.timeoutIntervalForRequest = 35   // wait=20 + желі
         l.timeoutIntervalForResource = 35
         long = URLSession(configuration: l)
+        // Желі не VPN (Tailscale) дайын ба
+        monitor.pathUpdateHandler = { [weak self] path in self?.pathReady = path.status == .satisfied }
+        monitor.start(queue: DispatchQueue(label: "kz.ersultan.alikhan.net"))
+    }
+
+    private let monitor = NWPathMonitor()
+    private var pathReady = true
+
+    /// Siri-ден ашқанда VPN әлі қосылмаған болуы мүмкін: 5 секундқа дейін күтеміз
+    private func waitForNetwork() async {
+        var waited = 0.0
+        while !pathReady && waited < 5 {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            waited += 0.2
+        }
+    }
+
+    /// Серверге жетпеген қате: қайталауға болады
+    private static func retryable(_ error: Error, after seconds: Double) -> Bool {
+        guard let e = error as? URLError else { return false }
+        switch e.code {
+        case .notConnectedToInternet, .cannotConnectToHost, .networkConnectionLost, .cannotFindHost, .dnsLookupFailed:
+            return true
+        case .timedOut:
+            return seconds < 3   // Қосыла алмай тез үзілді. Ұзақ күтіп барып үзілсе, қайталамаймыз.
+        default:
+            return false
+        }
     }
 
     private func request(_ path: String, method: String = "GET") throws -> URLRequest {
@@ -172,7 +208,25 @@ final class API {
         return r
     }
 
+    /// Бірінші сұрау сәтсіз болса, бірден қате айтпаймыз: 0,3, 0,6, 1, 1,5, 2 с сайын қайталаймыз (барлығы 5 с шамасы)
     private func send(_ r: URLRequest, long useLong: Bool = false) async throws -> Data {
+        await waitForNetwork()
+        let delays: [Double] = [0.3, 0.6, 1, 1.5, 2]
+        var attempt = 0
+        while true {
+            let started = Date()
+            do {
+                return try await sendOnce(r, long: useLong)
+            } catch {
+                guard attempt < delays.count, !Task.isCancelled,
+                      API.retryable(error, after: Date().timeIntervalSince(started)) else { throw error }
+                try await Task.sleep(nanoseconds: UInt64(delays[attempt] * 1_000_000_000))
+                attempt += 1
+            }
+        }
+    }
+
+    private func sendOnce(_ r: URLRequest, long useLong: Bool) async throws -> Data {
         let (data, resp) = try await (useLong ? long : quick).data(for: r)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         if code == 401 { throw APIError.unauthorized }
@@ -180,14 +234,39 @@ final class API {
         return data
     }
 
-    func phone(audio: Encoded? = nil, text: String? = nil) async throws -> PhoneReply {
+    func phone(audio: Encoded? = nil, text: String? = nil, earlyId: String? = nil) async throws -> PhoneReply {
         var form = Multipart()
         if let audio { form.file("file", audio) }
         if let text { form.field("text", text) }
-        var r = try request("/phone", method: "POST")
+        var path = "/phone?stream=true"
+        if let earlyId { path += "&early_id=\(earlyId)" }
+        var r = try request(path, method: "POST")
         r.setValue(form.contentType, forHTTPHeaderField: "Content-Type")
         r.httpBody = form.finish()
         return try JSONDecoder().decode(PhoneReply.self, from: try await send(r))
+    }
+
+    /// 0,2 с үнсіздік: сервер сөзді алдын ала таниды, модель ойлана бастайды
+    func sttEarly(id: String, audio: Encoded) async throws {
+        var form = Multipart()
+        form.file("file", audio)
+        var r = try request("/stt/early?id=\(id)&device=phone", method: "POST")
+        r.setValue(form.contentType, forHTTPHeaderField: "Content-Type")
+        r.httpBody = form.finish()
+        _ = try await send(r)
+    }
+
+    struct Expect {
+        var expect = false     // Сервер жауап күтіп тұр
+        var running = 0        // Жүріп жатқан тапсырма саны
+        var said = ""          // Алиханның соңғы айтқаны
+    }
+
+    func expect() async throws -> Expect {
+        let json = try JSONSerialization.jsonObject(with: try await send(try request("/expect"))) as? [String: Any] ?? [:]
+        return Expect(expect: json["expect"] as? Bool ?? false,
+                      running: (json["running"] as? Int) ?? Int(json["running"] as? Double ?? 0),
+                      said: json["said"] as? String ?? "")
     }
 
     func wakeConfirm(_ audio: Encoded) async throws -> String {

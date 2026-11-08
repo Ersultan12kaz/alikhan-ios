@@ -247,6 +247,11 @@ struct SettingsView: View {
                     Toggle("Үнемі тыңдау («Алихан» сөзін күту)", isOn: $settings.alwaysListen)
                     Toggle("Наушник микрофоны", isOn: $settings.headsetMic)
                     Toggle("Picture-in-Picture айдаһар", isOn: $settings.pip)
+                    Toggle("Шу басу (Voice Processing)", isOn: $settings.voiceProcessing)
+                    VStack(alignment: .leading) {
+                        Text("Сөз соңы: \(settings.endSilence, specifier: "%.1f") с үнсіздік")
+                        Slider(value: $settings.endSilence, in: 0.5...1.5, step: 0.1)
+                    }
                     VStack(alignment: .leading) {
                         Text("Дауыс шегі: шудан \(settings.nearRatio, specifier: "%.2f") есе қатты")
                         Slider(value: $settings.nearRatio, in: 1.2...3.0, step: 0.05)
@@ -296,6 +301,8 @@ struct SettingsView: View {
             .onChange(of: settings.pip) { _, _ in a.settingsChanged() }
             .onChange(of: settings.nearRatio) { _, _ in a.settingsChanged() }
             .onChange(of: settings.headsetMic) { _, _ in a.headsetChanged() }
+            .onChange(of: settings.voiceProcessing) { _, _ in a.headsetChanged() }
+            .onChange(of: settings.endSilence) { _, _ in a.settingsChanged() }
         }
     }
 

@@ -8,9 +8,7 @@ struct OpenAlikhanIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        let a = Assistant.shared
-        a.boot()
-        if a.settings.configured { a.startTalk() }
+        Assistant.shared.startFromSiri()
         return .result()
     }
 }

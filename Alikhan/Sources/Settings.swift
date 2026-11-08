@@ -42,17 +42,22 @@ final class Settings: ObservableObject {
     @Published var headsetMic: Bool { didSet { d.set(headsetMic, forKey: "headsetMic") } }
     @Published var nearRatio: Double { didSet { d.set(nearRatio, forKey: "nearRatio") } }
     @Published var pip: Bool { didSet { d.set(pip, forKey: "pip") } }
+    @Published var endSilence: Double { didSet { d.set(endSilence, forKey: "endSilence") } }       // Сөздің соңы: 0,8 с
+    @Published var voiceProcessing: Bool { didSet { d.set(voiceProcessing, forKey: "voiceProcessing") } }
     @Published var configured: Bool { didSet { d.set(configured, forKey: "configured") } }
 
     private init() {
         d.register(defaults: ["server": Settings.defaultServer, "alwaysListen": true, "headsetMic": false,
-                              "nearRatio": 1.65, "pip": false, "configured": false])
+                              "nearRatio": 1.65, "pip": false, "configured": false,
+                              "endSilence": 0.8, "voiceProcessing": true])
         server = d.string(forKey: "server") ?? Settings.defaultServer
         token = Keychain.get("token") ?? ""
         alwaysListen = d.bool(forKey: "alwaysListen")
         headsetMic = d.bool(forKey: "headsetMic")
         nearRatio = d.double(forKey: "nearRatio")
         pip = d.bool(forKey: "pip")
+        endSilence = d.double(forKey: "endSilence")
+        voiceProcessing = d.bool(forKey: "voiceProcessing")
         configured = d.bool(forKey: "configured")
     }
 
