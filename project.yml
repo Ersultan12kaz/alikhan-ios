@@ -23,6 +23,10 @@ targets:
     dependencies:
       - target: AlikhanWidget
     scheme: {}
+    entitlements:
+      path: Alikhan/Alikhan.entitlements
+      properties:
+        aps-environment: production
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: kz.ersultan.alikhan
@@ -39,7 +43,7 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIRequiresFullScreen: true
-        UIBackgroundModes: [audio]
+        UIBackgroundModes: [audio, remote-notification]
         NSSupportsLiveActivities: true
         NSMicrophoneUsageDescription: Алихан сіздің сөзіңізді тыңдап, серверге жібереді.
         NSContactsUsageDescription: «Анама қоңырау шал» десеңіз, Алихан нөмірді контактілерден табады.

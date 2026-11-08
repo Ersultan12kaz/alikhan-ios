@@ -1,19 +1,19 @@
 import AVFoundation
 import SwiftUI
 
-/// Сервердегі агент сізден күтетін іс: кіру, растау, түсіру т.б.
-struct UserTask: Identifiable, Codable, Equatable {
-    var id: String
-    var text: String
-    var links: [URL]
-    var created: Date
-    var done: Bool = false
+/// Қосымша ішіндегі «Сервер экраны» (noVNC)
+struct ServerScreen: Identifiable {
+    let id = UUID()
+    let url: URL
+    let title: String
+    let askId: String?
 }
 
 struct CaptureRequest: Identifiable {
     let id = UUID()
     let video: Bool
     let upload: URL
+    var askId: String? = nil
 }
 
 /// Алиханның «құлағы, аузы, пульті». Ойламайды: дыбысты серверге жібереді, жауапты ойнатады, әрекетті орындайды.
@@ -28,9 +28,10 @@ final class Assistant: ObservableObject {
     @Published private(set) var heard = ""
     @Published private(set) var said = ""
     @Published private(set) var banner = ""
-    @Published private(set) var tasks: [UserTask] = Assistant.loadTasks()
-    @Published var showTasks = false          // «Тапсырмаларым» беті
-    @Published var webTask: UserTask?         // Қосымша ішіндегі кіру беті
+    @Published private(set) var asks: [Ask] = []    // «Тапсырмаларым»: негізгі көзі GET /asks
+    @Published var showTasks = false                 // «Тапсырмаларым» беті
+    @Published var serverScreen: ServerScreen?       // Қосымша ішіндегі сервер экраны
+    @Published private(set) var uploadProgress: Double?
     @Published var capture: CaptureRequest?
     @Published var status = ""
     @Published private(set) var wakeSendsLastHour = 0
@@ -77,12 +78,17 @@ final class Assistant: ObservableObject {
     func afterSetup() {
         Voice.shared.prefetch([Assistant.listening, Assistant.weakNet])
         startNotices()
+        Task {
+            await refreshAsks()
+            await AppDelegate.registerForPush()   // Токен әр ашылғанда қайта жіберіледі
+        }
     }
 
     func requestPermissions() async {
         _ = await AVAudioApplication.requestRecordPermission()
         await Phone.requestContacts()
         await Reminders.shared.requestAccess()
+        await AppDelegate.registerForPush()
     }
 
     // MARK: Режимдер
@@ -102,10 +108,10 @@ final class Assistant: ObservableObject {
     }
 
     /// Сөйлесу: батырмасыз, 0,9 с үнсіздік — сөйлем кетеді.
-    func startTalk() {
+    func startTalk(idle: TimeInterval = 10) {
         guard ensureAudio(maxLength: 15) else { return }
         mode = .talk
-        idleDeadline = Date().addingTimeInterval(10)
+        idleDeadline = Date().addingTimeInterval(idle)
         banner = ""
         setOrb(.listen)
         Island.shared.start(content)
@@ -220,7 +226,7 @@ final class Assistant: ObservableObject {
         let words = tail.split(separator: " ").count
         // «Алихан, анама қоңырау шал»: сұрақ айтылып қойған, қайта сұрамаймыз.
         // Тапсырма күтіп тұрса, «Алихан, жасадым» да бірден кетеді.
-        if words >= 2 || (hasPendingTasks && tail.contains("жасад")) {
+        if words >= 2 || (!asks.isEmpty && tail.contains("жасад")) {
             banner = ""
             ask(text: tail)
             return
@@ -269,7 +275,7 @@ final class Assistant: ObservableObject {
         if let h = r.heard, !h.isEmpty { heard = h }
         if let t = r.text, !t.isEmpty { said = t }
         banner = ""
-        if heard.lowercased().contains("жасад"), let last = tasks.last(where: { !$0.done }) { setDone(last) }
+        if heard.lowercased().contains("жасад") { Task { await refreshAsks() } }
         if let items = r.reminders, !items.isEmpty { Task { await Reminders.shared.add(items) } }
         if let b64 = r.audio, !b64.isEmpty, let data = Data(base64Encoded: b64, options: .ignoreUnknownCharacters) {
             setOrb(.speak)
@@ -321,51 +327,85 @@ final class Assistant: ObservableObject {
             await Phone.runShortcut("\(action):\(arg)")
         case "capture":
             // Серверде әлі жоқ: келсе, камера ашылады
-            if let target = URL(string: url) { capture = CaptureRequest(video: arg != "photo", upload: target) }
+            if let target = URL(string: url), API.shared.isOwnServer(target) { capture = CaptureRequest(video: arg != "photo", upload: target) }
         default:
             break
         }
     }
 
-    // MARK: Тапсырмаларым
+    // MARK: Тапсырмаларым (ask)
 
-    var hasPendingTasks: Bool { tasks.contains { !$0.done } }
-
-    private static func loadTasks() -> [UserTask] {
-        guard let data = UserDefaults.standard.data(forKey: "userTasks"),
-              let list = try? JSONDecoder().decode([UserTask].self, from: data) else { return [] }
-        return list
+    func refreshAsks() async {
+        guard settings.configured, !settings.token.isEmpty, let list = try? await API.shared.asks() else { return }
+        // Ең ескісі жоғарыда
+        asks = list.sorted { ($0.created ?? .distantPast) < ($1.created ?? .distantPast) }
     }
 
-    private func saveTasks() {
-        tasks = Array(tasks.suffix(50))
-        if let data = try? JSONEncoder().encode(tasks) { UserDefaults.standard.set(data, forKey: "userTasks") }
+    /// «Орындадым» / «Бас тарту»: серверге кетеді, жауабы ойнатылады
+    func finishAsk(_ id: String, cancel: Bool = false) {
+        asks.removeAll { $0.ask_id == id }
+        if serverScreen?.askId == id { serverScreen = nil }
+        Task {
+            do {
+                let r = cancel ? try await API.shared.askCancel(id) : try await API.shared.askDone(id)
+                await playReply(text: r.text, audio: r.audio)
+            } catch {
+                said = "Серверге жетпеді: \(error.localizedDescription)"
+            }
+            await refreshAsks()
+        }
     }
 
-    private func addTask(id: String?, text: String) {
-        let key = id ?? text
-        guard !tasks.contains(where: { $0.id == key }) else { return }
-        tasks.append(UserTask(id: key, text: text, links: Phone.links(in: text), created: Date()))
-        saveTasks()
-        showTasks = true   // Жаңа тапсырма: бет өзі ашылады
+    private func playReply(text: String?, audio b64: String?) async {
+        if let t = text, !t.isEmpty { said = t }
+        guard let b64, !b64.isEmpty, let data = Data(base64Encoded: b64, options: .ignoreUnknownCharacters) else { return }
+        let before = orb
+        setOrb(.speak)
+        await audio.play(data)
+        if orb == .speak { setOrb(mode == .talk ? .listen : (before == .error ? .sleep : before)) }
     }
 
-    private func setDone(_ task: UserTask) {
-        guard let i = tasks.firstIndex(where: { $0.id == task.id }) else { return }
-        tasks[i].done = true
-        saveTasks()
+    func openServerScreen(for ask: Ask) {
+        guard let s = ask.remote_browser_url, let url = URL(string: s) else { return }
+        serverScreen = ServerScreen(url: url, title: ask.heading, askId: ask.ask_id)
     }
 
-    /// «Орындадым»: серверге хабар кетеді (сервер «жасадым» сөзін күтіп тұр)
-    func taskDone(_ task: UserTask) {
-        setDone(task)
-        webTask = nil
-        ask(text: "жасадым")
+    /// Кез келген уақытта сервер экранын ашу (аккаунттарға алдын ала кіріп қою)
+    func openServerScreen() {
+        Task {
+            do {
+                serverScreen = ServerScreen(url: try await API.shared.browserLink(), title: "Сервер экраны", askId: nil)
+            } catch {
+                status = "Сервер экраны ашылмады: \(error.localizedDescription)"
+                said = status
+            }
+        }
     }
 
-    func removeTask(_ task: UserTask) {
-        tasks.removeAll { $0.id == task.id }
-        saveTasks()
+    func startCapture(for ask: Ask) {
+        guard let c = ask.capture, let s = c.url, let url = URL(string: s), API.shared.isOwnServer(url) else { return }
+        capture = CaptureRequest(video: c.arg != "photo", upload: url, askId: ask.ask_id)
+    }
+
+    /// Push келді не басылды
+    func pushArrived(_ info: [AnyHashable: Any], opened: Bool) {
+        Task { await refreshAsks(); await syncReminders(force: true) }
+        guard opened else { return }
+        let kind = info["kind"] as? String
+        if kind == "ask" {
+            let id = info["ask_id"] as? String ?? (info["ask_id"] as? Int).map(String.init)
+            Task {
+                await refreshAsks()
+                if let id, let a = asks.first(where: { $0.ask_id == id }), a.remote_browser_url != nil {
+                    openServerScreen(for: a)
+                } else {
+                    showTasks = true
+                }
+            }
+        } else {
+            showTasks = false
+            serverScreen = nil
+        }
     }
 
     func handle(url: URL) {
@@ -375,6 +415,7 @@ final class Assistant: ObservableObject {
 
     func scenePhaseChanged(_ phase: ScenePhase) {
         guard phase == .active, booted, settings.configured else { return }
+        Task { await refreshAsks() }
         if mode == .off { startTalk() }
         // Фонда басталмаған Live Activity-ді енді бастаймыз
         if settings.alwaysListen, !Island.shared.isRunning { Island.shared.start(content) }
@@ -395,10 +436,15 @@ final class Assistant: ObservableObject {
                     let peek = try await API.shared.notifications(ack: false, wait: 20)
                     if !peek.isEmpty {
                         let items = try await API.shared.notifications(ack: true, wait: 0)
-                        self.notices += items.filter { !($0.voice_text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                        self.notices += items
+                        if items.contains(where: { $0.kind == "ask" }) { await self.refreshAsks() }
                         self.drainNotices()
                     }
                     await self.syncReminders()
+                    if Date().timeIntervalSince(self.asksCheckedAt) > 15 {   // Тізім 15 секунд сайын жаңарады
+                        self.asksCheckedAt = Date()
+                        await self.refreshAsks()
+                    }
                 } catch {
                     try? await Task.sleep(nanoseconds: 5_000_000_000)
                 }
@@ -407,6 +453,7 @@ final class Assistant: ObservableObject {
     }
 
     private var speakingNotice = false
+    private var asksCheckedAt = Date.distantPast
 
     /// Сөйлесу жүріп жатса, біткенін күтеді.
     func drainNotices() {
@@ -414,23 +461,29 @@ final class Assistant: ObservableObject {
         speakingNotice = true
         let notice = notices.removeFirst()
         let text = (notice.voice_text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        // Агент сізді күтіп тұр: «Тапсырмаларым» бетіне түседі
-        if text.contains("күтіп тұр") || text.lowercased().contains("жасадым") { addTask(id: notice.id, text: text) }
+        // ask: «Тапсырмаларым» бетіне түседі (әрі дауыспен айтылады)
+        if notice.kind == "ask" { showTasks = true }
+        guard !text.isEmpty else { speakingNotice = false; drainNotices(); return }
         Task {
             let before = orb
             said = text
             setOrb(.speak)
             await say(text)
-            if mode != .talk { setOrb(mode == .off ? .sleep : before == .error ? .sleep : before) }
             speakingNotice = false
+            if notice.kind == "question" {
+                // Сұрақ тек дауыспен: жауабын 8 секунд тыңдаймыз, ол /phone-ға кетеді
+                startTalk(idle: 8)
+                return
+            }
+            if mode != .talk { setOrb(mode == .off ? .sleep : before == .error ? .sleep : before) }
             drainNotices()
         }
     }
 
-    /// Серверде әлі жоқ (GET /reminders/pending): 404 болса, 10 минутта бір тексереді.
-    private func syncReminders() async {
+    /// GET /reminders/pending: минутына бір рет және push келгенде. 404 болса, 10 минутта бір.
+    private func syncReminders(force: Bool = false) async {
         let gap: TimeInterval = remindersMissing ? 600 : 60
-        guard Date().timeIntervalSince(remindersCheckedAt) > gap, Reminders.shared.authorized else { return }
+        guard force || Date().timeIntervalSince(remindersCheckedAt) > gap, Reminders.shared.authorized else { return }
         remindersCheckedAt = Date()
         do {
             let items = try await API.shared.pendingReminders()
@@ -447,16 +500,29 @@ final class Assistant: ObservableObject {
         capture = nil
         resumeAudio()
         guard let file else { return }
-        Task {
-            do {
-                try await API.shared.upload(file: file, mime: mime, to: request.upload)
-                said = "Жүктелді"
-            } catch {
-                said = "Жүктелмеді: \(error.localizedDescription)"
+        uploadProgress = 0
+        Uploader.shared.onProgress = { [weak self] p in self?.uploadProgress = p }
+        Uploader.shared.onFinish = { [weak self] result in
+            guard let self else { return }
+            self.uploadProgress = nil
+            Task {
+                switch result {
+                case .success(let reply):
+                    if let reply { await self.playReply(text: reply.text ?? "Жүктелді", audio: reply.audio) } else { self.said = "Жүктелді" }
+                case .failure(let error):
+                    self.said = "Жүктелмеді: \(error.localizedDescription)"
+                    self.setOrb(.speak)
+                    await self.say(self.said)
+                    if self.mode == .talk { self.setOrb(.listen) }
+                }
+                await self.refreshAsks()
             }
-            setOrb(.speak)
-            await say(said)
-            if mode == .talk { setOrb(.listen) }
+        }
+        do {
+            try Uploader.shared.upload(file: file, mime: mime, to: request.upload)
+        } catch {
+            uploadProgress = nil
+            said = "Жүктелмеді: \(error.localizedDescription)"
         }
     }
 

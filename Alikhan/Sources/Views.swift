@@ -17,12 +17,15 @@ struct ContentView: View {
                 HStack(spacing: 18) {
                     Text(a.orb.label).font(.subheadline).foregroundStyle(a.orb.accent)
                     Spacer()
+                    Button { a.openServerScreen() } label: {
+                        Image(systemName: "display").font(.title2).foregroundStyle(.white.opacity(0.85))
+                    }
+                    .accessibilityLabel("Сервер экраны")
                     Button { a.showTasks = true } label: {
                         Image(systemName: "checklist").font(.title2).foregroundStyle(.white.opacity(0.85))
                             .overlay(alignment: .topTrailing) {
-                                let n = a.tasks.filter { !$0.done }.count
-                                if n > 0 {
-                                    Text("\(n)").font(.caption2.bold()).foregroundStyle(.white)
+                                if !a.asks.isEmpty {
+                                    Text("\(a.asks.count)").font(.caption2.bold()).foregroundStyle(.white)
                                         .padding(4).background(Circle().fill(Color(hex: 0xf43f5e))).offset(x: 8, y: -8)
                                 }
                             }
@@ -55,11 +58,19 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 20)
 
-                if let next = a.tasks.last(where: { !$0.done }) {
+                if let p = a.uploadProgress {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Серверге жүктеліп жатыр: \(Int(p * 100))%").font(.footnote).foregroundStyle(.white.opacity(0.8))
+                        ProgressView(value: p).tint(Color(hex: 0x38bdf8))
+                    }
+                    .padding(.horizontal, 20)
+                }
+
+                if let first = a.asks.first {
                     Button { a.showTasks = true } label: {
                         HStack {
                             Image(systemName: "hand.raised.fill").foregroundStyle(Color(hex: 0xfbbf24))
-                            Text(next.text).lineLimit(1).foregroundStyle(.white)
+                            Text(first.heading).lineLimit(1).foregroundStyle(.white)
                             Spacer()
                             Image(systemName: "chevron.right").foregroundStyle(.white.opacity(0.5))
                         }
@@ -78,6 +89,7 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) { SettingsView().environmentObject(settings).environmentObject(a) }
         .sheet(isPresented: $a.showTasks) { TasksView().environmentObject(a) }
         .fullScreenCover(isPresented: .constant(!settings.configured)) { SettingsView(onboarding: true).environmentObject(settings).environmentObject(a) }
+        .fullScreenCover(item: $a.serverScreen) { ServerScreenView(screen: $0).environmentObject(a) }
         .fullScreenCover(item: $a.capture) { req in
             CaptureView(video: req.video) { file, mime in a.captureFinished(file: file, mime: mime, request: req) }
                 .ignoresSafeArea()
@@ -86,8 +98,7 @@ struct ContentView: View {
     }
 }
 
-/// «Тапсырмаларым»: сервердегі агент сізден күтетін істер.
-/// Әрқайсысында «Орындадым»: басылса, серверге хабар кетеді.
+/// «Тапсырмаларым»: қолданушы өз қолымен істейтін істер (GET /asks). Ең ескісі жоғарыда.
 struct TasksView: View {
     @EnvironmentObject var a: Assistant
     @Environment(\.dismiss) private var dismiss
@@ -95,49 +106,58 @@ struct TasksView: View {
     var body: some View {
         NavigationStack {
             List {
-                let pending = a.tasks.filter { !$0.done }.reversed()
-                let done = a.tasks.filter { $0.done }.reversed()
-                Section {
-                    if pending.isEmpty {
-                        Text("Қазір сізден күтетін ештеңе жоқ").foregroundStyle(.secondary)
-                    }
-                    ForEach(Array(pending)) { task in
-                        TaskRow(task: task)
-                    }
-                } header: { Text("Сізден күтеді") }
-
-                if !done.isEmpty {
-                    Section("Орындалды") {
-                        ForEach(Array(done)) { task in
-                            Label(task.text, systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(.secondary).lineLimit(2)
-                                .swipeActions { Button("Өшіру", role: .destructive) { a.removeTask(task) } }
-                        }
-                    }
+                if a.asks.isEmpty {
+                    Text("Қазір сізден күтетін ештеңе жоқ").foregroundStyle(.secondary)
+                }
+                ForEach(a.asks) { ask in
+                    AskRow(ask: ask)
                 }
             }
+            .refreshable { await a.refreshAsks() }
             .navigationTitle("Тапсырмаларым")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Жабу") { dismiss() } } }
-            .fullScreenCover(item: $a.webTask) { task in LoginView(task: task).environmentObject(a) }
+            .task {
+                // Бет ашық тұрғанда 15 секунд сайын жаңарады
+                while !Task.isCancelled {
+                    await a.refreshAsks()
+                    try? await Task.sleep(nanoseconds: 15_000_000_000)
+                }
+            }
         }
     }
 }
 
-struct TaskRow: View {
+struct AskRow: View {
     @EnvironmentObject var a: Assistant
-    let task: UserTask
+    let ask: Ask
+
+    /// Бұл парақ жабылған соң ғана келесі толық экран ашылады
+    private func afterClose(_ action: @escaping () -> Void) {
+        a.showTasks = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: action)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(task.text).font(.callout)
-            Text(task.created, style: .relative).font(.caption).foregroundStyle(.secondary)
-            HStack {
-                if !task.links.isEmpty {
-                    Button { a.webTask = task } label: { Label("Ашу", systemImage: "arrow.up.forward.app") }
+            Text(ask.heading).font(.headline)
+            if let q = ask.question, q != ask.heading { Text(q).font(.callout) }
+            if let d = ask.created { Text(d, style: .relative).font(.caption).foregroundStyle(.secondary) }
+            HStack(spacing: 8) {
+                if ask.remote_browser_url != nil {
+                    Button { afterClose { a.openServerScreen(for: ask) } } label: { Label("Ашу", systemImage: "display") }
+                        .buttonStyle(.bordered)
+                } else if ask.capture != nil {
+                    Button { afterClose { a.startCapture(for: ask) } } label: { Label("Түсіру", systemImage: "camera") }
+                        .buttonStyle(.bordered)
+                } else if let s = ask.url, let url = URL(string: s) {
+                    // Телефонның өз ісі (мысалы Kaspi-де растау)
+                    Button { UIApplication.shared.open(url) } label: { Label("Сілтемені ашу", systemImage: "arrow.up.forward.app") }
                         .buttonStyle(.bordered)
                 }
                 Spacer()
-                Button { a.taskDone(task) } label: { Label("Орындадым", systemImage: "checkmark") }
+                Button("Бас тарту", role: .destructive) { a.finishAsk(ask.ask_id, cancel: true) }
+                    .buttonStyle(.borderless)
+                Button { a.finishAsk(ask.ask_id) } label: { Label("Орындадым", systemImage: "checkmark") }
                     .buttonStyle(.borderedProminent).tint(Color(hex: 0x10b981))
             }
         }
@@ -145,50 +165,55 @@ struct TaskRow: View {
     }
 }
 
-/// Қосымша ішіндегі кіру беті. Логин мен парольді сіз осы бетте өзіңіз енгізесіз:
-/// Алихан бет ішіне ештеңе жазбайды, ештеңе оқымайды, серверге жібермейді.
-struct LoginView: View {
+/// «Сервер экраны»: сервердегі браузер не терминал (noVNC), қосымшаның ішінде.
+/// Логин мен парольді сіз осы экранда өзіңіз жазасыз. Бұл тек экран кадры: пароль қосымшадан өтпейді.
+struct ServerScreenView: View {
     @EnvironmentObject var a: Assistant
     @Environment(\.dismiss) private var dismiss
-    let task: UserTask
+    let screen: ServerScreen
+    @StateObject private var web = WebHolder()
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                Text(task.text).font(.footnote).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                Divider()
-                if let url = task.links.first { WebView(url: url) }
-                Divider()
-                Button { a.taskDone(task); dismiss() } label: {
-                    Label("Орындадым", systemImage: "checkmark").frame(maxWidth: .infinity).padding(.vertical, 6)
-                }
-                .buttonStyle(.borderedProminent).tint(Color(hex: 0x10b981)).padding(12)
-            }
-            .navigationTitle(task.links.first?.host ?? "Кіру")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Жабу") { dismiss() } }
-                if let url = task.links.first {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button { UIApplication.shared.open(url) } label: { Image(systemName: "safari") }
-                            .accessibilityLabel("Safari-де ашу")
-                    }
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Button("Жабу") { dismiss() }
+                Text(screen.title).font(.headline).lineLimit(1).frame(maxWidth: .infinity)
+                Button { web.showKeyboard() } label: { Text("⌨︎ Пернетақта") }
+                    .buttonStyle(.bordered)
+                if let id = screen.askId {
+                    Button { a.finishAsk(id); dismiss() } label: { Label("Орындадым", systemImage: "checkmark") }
+                        .buttonStyle(.borderedProminent).tint(Color(hex: 0x10b981))
                 }
             }
+            .padding(10)
+            Divider()
+            WebView(url: screen.url, holder: web)
         }
+        .background(Color.black)
+    }
+}
+
+final class WebHolder: ObservableObject {
+    weak var view: WKWebView?
+    func showKeyboard() {
+        view?.evaluateJavaScript("var b=document.getElementById('noVNC_keyboard_button'); if (b) { b.click(); }")
     }
 }
 
 struct WebView: UIViewRepresentable {
     let url: URL
+    var holder: WebHolder? = nil
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = .default()   // Кіргеннен кейін cookie сақталады
+        config.websiteDataStore = .default()
+        config.allowsInlineMediaPlayback = true
         let view = WKWebView(frame: .zero, configuration: config)
         view.allowsBackForwardNavigationGestures = true
+        view.scrollView.minimumZoomScale = 1
+        view.scrollView.maximumZoomScale = 4
         view.load(URLRequest(url: url))
+        holder?.view = view
         return view
     }
 
@@ -229,6 +254,15 @@ struct SettingsView: View {
                     LabeledContent("Соңғы сағатта /wake/confirm", value: "\(a.wakeSendsLastHour) рет")
                 } header: { Text("Тыңдау") } footer: {
                     Text("Наушник микрофоны өшірулі болса, телефонның өз микрофоны тыңдайды, ал музыка наушникке жоғары сапада шығады. Қосулы болса, AirPods сөйлесу режиміне ауысады да, музыка сапасы төмендейді.")
+                }
+
+                Section {
+                    Button("Сервер экранын ашу") {
+                        dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { a.openServerScreen() }
+                    }
+                } header: { Text("Сервер экраны") } footer: {
+                    Text("Сайттарға не бағдарламаларға алдын ала кіріп қою үшін. Мәтін қою: экранның сол жағындағы панельде «Clipboard» өрісіне мәтінді салсаңыз, ол сервердің алмасу буферіне өтеді, сосын сол жерде қоясыз.")
                 }
 
                 Section("Рұқсаттар") {

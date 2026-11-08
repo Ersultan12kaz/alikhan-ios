@@ -36,18 +36,95 @@ struct PhoneReply: Decodable {
     }
 }
 
+struct CaptureInfo: Decodable, Hashable {
+    var arg: String?
+    var url: String?
+}
+
+/// /notifications элементі. Өрістердің бәрі бола бермейді.
 struct Notice: Decodable {
     var id: String?
     var voice_text: String?
+    var kind: String?          // ask, question, done, message
+    var ask_id: String?
+    var title: String?
+    var question: String?
+    var url: String?
+    var remote_browser_url: String?
+    var capture: CaptureInfo?
+    var task_id: String?
 
-    enum CodingKeys: String, CodingKey { case id, voice_text }
+    enum CodingKeys: String, CodingKey { case id, voice_text, kind, ask_id, title, question, url, remote_browser_url, capture, task_id }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.flexibleString(.id)
         voice_text = try? c.decodeIfPresent(String.self, forKey: .voice_text)
-        // id сан не мәтін болуы мүмкін
-        if let s = try? c.decodeIfPresent(String.self, forKey: .id) { id = s }
-        else if let n = try? c.decodeIfPresent(Int.self, forKey: .id) { id = String(n) }
+        kind = try? c.decodeIfPresent(String.self, forKey: .kind)
+        ask_id = c.flexibleString(.ask_id)
+        title = try? c.decodeIfPresent(String.self, forKey: .title)
+        question = try? c.decodeIfPresent(String.self, forKey: .question)
+        url = try? c.decodeIfPresent(String.self, forKey: .url)
+        remote_browser_url = try? c.decodeIfPresent(String.self, forKey: .remote_browser_url)
+        capture = try? c.decodeIfPresent(CaptureInfo.self, forKey: .capture)
+        task_id = c.flexibleString(.task_id)
+    }
+}
+
+/// Қолданушы өз қолымен істейтін тапсырма (GET /asks)
+struct Ask: Decodable, Identifiable, Hashable {
+    var ask_id: String
+    var title: String?
+    var question: String?
+    var status: String?
+    var created_at: String?
+    var url: String?
+    var remote_browser_url: String?
+    var capture: CaptureInfo?
+
+    var id: String { ask_id }
+    var heading: String { title ?? question ?? "Тапсырма" }
+    var created: Date? { created_at.flatMap(Reminders.parse) }
+
+    enum CodingKeys: String, CodingKey { case ask_id, title, question, status, created_at, url, remote_browser_url, capture }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ask_id = c.flexibleString(.ask_id) ?? UUID().uuidString
+        title = try? c.decodeIfPresent(String.self, forKey: .title)
+        question = try? c.decodeIfPresent(String.self, forKey: .question)
+        status = try? c.decodeIfPresent(String.self, forKey: .status)
+        created_at = try? c.decodeIfPresent(String.self, forKey: .created_at)
+        url = try? c.decodeIfPresent(String.self, forKey: .url)
+        remote_browser_url = try? c.decodeIfPresent(String.self, forKey: .remote_browser_url)
+        capture = try? c.decodeIfPresent(CaptureInfo.self, forKey: .capture)
+    }
+}
+
+/// /ask/{id}/done, /cancel, /upload жауабы
+struct ActionReply: Decodable {
+    var ok: Bool?
+    var text: String?
+    var audio: String?
+    var task_id: String?
+
+    enum CodingKeys: String, CodingKey { case ok, text, audio, task_id }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try? c.decodeIfPresent(Bool.self, forKey: .ok)
+        text = try? c.decodeIfPresent(String.self, forKey: .text)
+        audio = try? c.decodeIfPresent(String.self, forKey: .audio)
+        task_id = c.flexibleString(.task_id)
+    }
+}
+
+extension KeyedDecodingContainer {
+    /// id сан не мәтін болуы мүмкін
+    func flexibleString(_ key: Key) -> String? {
+        if let s = try? decodeIfPresent(String.self, forKey: key) { return s }
+        if let n = try? decodeIfPresent(Int.self, forKey: key) { return String(n) }
+        return nil
     }
 }
 
@@ -147,20 +224,44 @@ final class API {
         return (try? JSONDecoder().decode(Wrapped.self, from: data))?.reminders ?? []
     }
 
-    /// Түсірілген видео/фото: тек өз серверімізге (токен басқа жерге кетпесін).
-    func upload(file: URL, mime: String, to target: URL) async throws {
-        guard let base = Settings.shared.baseURL, target.host == base.host, target.port == base.port else { throw APIError.noServer }
-        var form = Multipart()
-        form.file("file", Encoded(data: try Data(contentsOf: file), filename: file.lastPathComponent, mime: mime))
-        var r = URLRequest(url: target)
-        r.httpMethod = "POST"
-        r.timeoutInterval = 120
-        r.setValue("Bearer \(Settings.shared.token)", forHTTPHeaderField: "Authorization")
-        r.setValue(form.contentType, forHTTPHeaderField: "Content-Type")
-        let (_, resp) = try await URLSession.shared.upload(for: r, from: form.finish())
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(code) else { throw APIError.status(code) }
+    func asks() async throws -> [Ask] {
+        let data = try await send(try request("/asks?status=pending"))
+        if let list = try? JSONDecoder().decode([Ask].self, from: data) { return list }
+        struct Wrapped: Decodable { var asks: [Ask]? }
+        return (try? JSONDecoder().decode(Wrapped.self, from: data))?.asks ?? []
     }
+
+    private func askAction(_ id: String, _ verb: String) async throws -> ActionReply {
+        let safe = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        var r = try request("/ask/\(safe)/\(verb)", method: "POST")
+        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        r.httpBody = Data("{}".utf8)
+        return try JSONDecoder().decode(ActionReply.self, from: try await send(r))
+    }
+
+    func askDone(_ id: String) async throws -> ActionReply { try await askAction(id, "done") }
+    func askCancel(_ id: String) async throws -> ActionReply { try await askAction(id, "cancel") }
+
+    func browserLink() async throws -> URL {
+        let json = try JSONSerialization.jsonObject(with: try await send(try request("/browser/link"))) as? [String: Any]
+        guard let s = json?["remote_browser_url"] as? String, let url = URL(string: s) else { throw APIError.status(-2) }
+        return url
+    }
+
+    func registerDevice(_ token: String) async throws {
+        var r = try request("/device", method: "POST")
+        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        r.httpBody = try JSONSerialization.data(withJSONObject: ["apns_token": token, "platform": "ios", "bundle_id": "kz.ersultan.alikhan"])
+        _ = try await send(r)
+    }
+
+    /// Жүктеу тек өз серверімізге: токен басқа хостқа кетпесін.
+    func isOwnServer(_ url: URL) -> Bool {
+        guard let base = Settings.shared.baseURL else { return false }
+        return url.absoluteString.hasPrefix(base.absoluteString + "/")
+    }
+
+    var authHeader: String { "Bearer \(Settings.shared.token)" }
 }
 
 struct Multipart {

@@ -9,3 +9,4 @@ AlikhanWidget/Info.plist
 *.key
 .env
 .DS_Store
+Alikhan/Alikhan.entitlements

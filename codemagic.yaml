@@ -24,6 +24,9 @@ workflows:
         script: |
           app-store-connect bundle-ids create "$BUNDLE_ID" --name "Alikhan" --platform IOS || echo "бар"
           app-store-connect bundle-ids create "$WIDGET_BUNDLE_ID" --name "Alikhan Widget" --platform IOS || echo "бар"
+          # Push құқығы (APNs): App ID-де қосулы болсын
+          BID=$(app-store-connect bundle-ids list --bundle-id-identifier "$BUNDLE_ID" --strict-match-identifier --platform IOS --json | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')
+          app-store-connect bundle-ids enable-capabilities "$BID" --capability PUSH_NOTIFICATIONS || echo "push бұрын қосылған"
       - name: Қолтаңба файлдары
         script: |
           set -e

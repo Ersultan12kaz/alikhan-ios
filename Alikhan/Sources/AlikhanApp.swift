@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct AlikhanApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var assistant = Assistant.shared
     @StateObject private var settings = Settings.shared
     @Environment(\.scenePhase) private var phase
