@@ -38,6 +38,7 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIRequiresFullScreen: true
         UIBackgroundModes: [audio]
         NSSupportsLiveActivities: true
         NSMicrophoneUsageDescription: Алихан сіздің сөзіңізді тыңдап, серверге жібереді.
