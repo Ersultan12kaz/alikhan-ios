@@ -26,7 +26,7 @@ workflows:
           app-store-connect bundle-ids create "$WIDGET_BUNDLE_ID" --name "Alikhan Widget" --platform IOS || echo "бар"
           # Push құқығы (APNs): App ID-де қосулы болсын
           BID=$(app-store-connect bundle-ids list --bundle-id-identifier "$BUNDLE_ID" --strict-match-identifier --platform IOS --json | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])')
-          app-store-connect bundle-ids enable-capabilities "$BID" --capability PUSH_NOTIFICATIONS || echo "push бұрын қосылған"
+          app-store-connect bundle-ids enable-capabilities "$BID" --capability "Push Notifications" || echo "push бұрын қосылған"
       - name: Қолтаңба файлдары
         script: |
           set -e
@@ -47,7 +47,11 @@ workflows:
           agvtool new-version -all $N
       - name: IPA құрастыру
         script: |
-          xcode-project build-ipa --project "Alikhan.xcodeproj" --scheme "Alikhan"
+          xcode-project build-ipa --project "Alikhan.xcodeproj" --scheme "Alikhan" || {
+            echo "==== Xcode қателері ===="
+            grep -hE "error:|: error|Provisioning profile|entitlement" /tmp/xcodebuild_logs/*.log | sort -u | head -80
+            exit 1
+          }
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
