@@ -55,7 +55,7 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: kz.ersultan.alikhan
             CFBundleURLSchemes: [alikhan]
-        LSApplicationQueriesSchemes: [shortcuts, tel, yandexmusic]
+        LSApplicationQueriesSchemes: [shortcuts, tel, yandexmusic, whatsapp, tg, instagram, youtube]
   AlikhanWidget:
     type: app-extension
     platform: iOS

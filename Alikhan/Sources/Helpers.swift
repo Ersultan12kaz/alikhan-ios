@@ -199,10 +199,11 @@ enum Phone {
         return await UIApplication.shared.open(url)
     }
 
+    /// https://, whatsapp://, tg://, instagram://, maps://, tel: т.б.
     @MainActor
-    static func open(_ string: String) async {
-        guard let url = URL(string: string) else { return }
-        _ = await UIApplication.shared.open(url)
+    static func open(_ string: String) async -> Bool {
+        guard let url = URL(string: string) else { return false }
+        return await UIApplication.shared.open(url)
     }
 
     /// iOS басқа қосымшаның ойнатуын басқаруға рұқсат бермейді: Shortcut арқылы.
@@ -215,7 +216,10 @@ enum Phone {
         c.queryItems = [URLQueryItem(name: "name", value: "Алихан басқару"),
                         URLQueryItem(name: "input", value: "text"),
                         URLQueryItem(name: "text", value: command),
-                        URLQueryItem(name: "x-success", value: "alikhan://")]
+                        URLQueryItem(name: "x-success", value: "alikhan://"),
+                        // Shortcut жоқ не қате болса, қосымшаға қайтып, дауыспен айтамыз
+                        URLQueryItem(name: "x-error", value: "alikhan://shortcut-error"),
+                        URLQueryItem(name: "x-cancel", value: "alikhan://")]
         guard let url = c.url else { return }
         _ = await UIApplication.shared.open(url)
     }

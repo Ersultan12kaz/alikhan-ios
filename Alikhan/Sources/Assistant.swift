@@ -285,11 +285,16 @@ final class Assistant: ObservableObject {
             await audio.play(data)
             guard my == gen else { return }
         }
+        // Ойнату бітті: әрекетті күтпей, бірден «тыңдау»
+        if r.end != true {
+            idleDeadline = Date().addingTimeInterval(10)
+            setOrb(.listen)
+        }
         await perform(action: r.action ?? "none", arg: r.arg ?? "", url: r.url ?? "")
         guard my == gen else { return }
         if r.end == true {
-            endTalk()
-        } else {
+            endTalk()   // «Рахмет, бара бер», «болды», «сау бол»
+        } else if orb == .speak {
             idleDeadline = Date().addingTimeInterval(10)
             setOrb(.listen)
         }
@@ -325,8 +330,13 @@ final class Assistant: ObservableObject {
                 await say(said)
             }
         case "music", "open_url":
-            await Phone.open(url.isEmpty ? arg : url)
-        case "next", "previous", "pause", "play", "volume":
+            if !(await Phone.open(url.isEmpty ? arg : url)) {
+                said = "Бұл қосымша телефонда жоқ не ашылмады"
+                setOrb(.speak)
+                await say(said)
+            }
+        case "next", "previous", "pause", "play", "volume", "open_app":
+            // Контактілер, Баптаулар, Камера сияқты қосымшалардың ашық схемасы жоқ: «Алихан басқару» Shortcut-ы ашады
             await Phone.runShortcut("\(action):\(arg)")
         case "capture":
             // Серверде әлі жоқ: келсе, камера ашылады
@@ -414,6 +424,14 @@ final class Assistant: ObservableObject {
     func handle(url: URL) {
         // alikhan://open (Dynamic Island) не alikhan:// (Shortcut біткен соң): тек қосымшаға оралу
         if url.host == "talk" { startTalk() }
+        if url.host == "shortcut-error" {
+            said = "Бұл үшін «Алихан басқару» Shortcut-ы керек"
+            Task {
+                setOrb(.speak)
+                await say(said)
+                setOrb(mode == .talk ? .listen : .sleep)
+            }
+        }
     }
 
     func scenePhaseChanged(_ phase: ScenePhase) {
