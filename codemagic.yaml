@@ -14,7 +14,7 @@ workflows:
       vars:
         BUNDLE_ID: kz.ersultan.alikhan
         WIDGET_BUNDLE_ID: kz.ersultan.alikhan.widget
-        APP_STORE_APP_ID: ""   # App Store Connect-тегі сандық ID (жазба ашылған соң қоямыз)
+        APP_STORE_APP_ID: "0"   # App Store Connect-тегі сандық ID (жазба ашылған соң қоямыз; 0 = әлі жоқ)
     scripts:
       - name: Xcode жобасын жасау
         script: |
@@ -35,7 +35,7 @@ workflows:
       - name: Құрастыру нөмірі
         script: |
           LATEST=""
-          if [ -n "$APP_STORE_APP_ID" ]; then
+          if [ "$APP_STORE_APP_ID" != "0" ]; then
             LATEST=$(app-store-connect get-latest-build-number "$APP_STORE_APP_ID" 2>/dev/null | tail -1 | tr -dc '0-9')
           fi
           # Нөмір алынбаса: уақыт бойынша, әрқашан өседі
