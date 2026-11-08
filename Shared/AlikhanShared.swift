@@ -58,6 +58,7 @@ enum OrbState: String, CaseIterable {
     }
 
     var dragon: String { "dragon_\(rawValue)" }
+    var islandDragon: String { "dragon_island_\(rawValue)" }   // Жақындатылған: Dynamic Island-тың кішкене күйі
 }
 
 extension Color {

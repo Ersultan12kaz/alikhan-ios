@@ -22,7 +22,7 @@ struct AlikhanLiveActivity: Widget {
             let s = OrbState(rawValue: context.state.state) ?? .sleep
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Image(s.dragon).resizable().scaledToFit().frame(width: 104, height: 70)
+                    Image(s.dragon).resizable().scaledToFit().frame(width: 120, height: 80)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     StatusMark(state: s).font(.title3).padding(.trailing, 4)
@@ -35,11 +35,11 @@ struct AlikhanLiveActivity: Widget {
                     Lines(content: context.state)
                 }
             } compactLeading: {
-                Image(s.dragon).resizable().scaledToFit().frame(width: 54, height: 36)
+                Image(s.islandDragon).resizable().scaledToFit().frame(width: 60, height: 36)
             } compactTrailing: {
                 StatusMark(state: s)
             } minimal: {
-                Image(s.dragon).resizable().scaledToFit().frame(width: 36, height: 30)
+                Image(s.islandDragon).resizable().scaledToFit().frame(width: 40, height: 30)
             }
             .widgetURL(openURL)
             .keylineTint(s.accent)

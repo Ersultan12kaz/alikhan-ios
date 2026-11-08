@@ -87,6 +87,10 @@ def main() -> None:
         img = tinted(arr, weight, color)
         small = img.resize((330, round(330 * img.height / img.width)), Image.LANCZOS)
         imageset(f"dragon_{state}", with_rim(small, 3), cat)          # Dynamic Island, құлып экраны
+        W, H = img.size   # Dynamic Island-тың жинақы күйі: қанаттары толық, тек құйрық ұшы қиылады, сонда үлкенірек
+        face = img.crop((0, 0, int(0.80 * W), int(0.74 * H)))
+        face = face.resize((300, round(300 * face.height / face.width)), Image.LANCZOS)
+        imageset(f"dragon_island_{state}", with_rim(face, 3), cat)
         big = img.resize((960, round(960 * img.height / img.width)), Image.LANCZOS)
         imageset(f"dragon_big_{state}", with_rim(big, 6), big_cat)    # PiP (тек қосымшада)
 
