@@ -73,6 +73,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         return true
     }
 
+    /// Қосымшаны толық жапты: Dynamic Island-тағы айдаһар кетсін
+    func applicationWillTerminate(_ application: UIApplication) {
+        Island.endAllNow()
+    }
+
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
         Task { try? await API.shared.registerDevice(hex) }

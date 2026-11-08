@@ -240,7 +240,8 @@ final class Island {
         var c = s
         c.heard = clip(c.heard, 120)
         c.said = clip(c.said, 160)
-        return ActivityContent(state: c, staleDate: nil)
+        // 25 минут жаңартылмаса, қосымша жабық деп есептеледі (виджет сұр болады)
+        return ActivityContent(state: c, staleDate: Date().addingTimeInterval(25 * 60))
     }
 
     /// Тек қосымша алдыңғы жоспарда тұрғанда басталады (iOS шарты).
@@ -253,6 +254,25 @@ final class Island {
     }
 
     var isRunning: Bool { activity != nil }
+
+    /// Қосымша тірі: 10 минут сайын жаңартады, сонда айдаһар сұр болмайды
+    func heartbeat() {
+        guard let a = activity, let s = last else { return }
+        let c = content(s)
+        Task { await a.update(c) }
+    }
+
+    /// Қосымша толық жабылғанда: айдаһар Dynamic Island-тан бірден кетеді
+    nonisolated static func endAllNow() {
+        let done = DispatchSemaphore(value: 0)
+        Task.detached {
+            for a in Activity<AlikhanAttributes>.activities {
+                await a.end(nil, dismissalPolicy: .immediate)
+            }
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 2)
+    }
 
     func update(_ s: AlikhanAttributes.ContentState, alert: String? = nil) {
         guard let a = activity, s != last || alert != nil else { return }

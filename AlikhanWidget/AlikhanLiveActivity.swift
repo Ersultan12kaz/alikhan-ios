@@ -14,32 +14,33 @@ private let openURL = URL(string: "alikhan://open")
 struct AlikhanLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: AlikhanAttributes.self) { context in
-            LockScreenView(content: context.state)
+            LockScreenView(content: context.state, stale: context.isStale)
                 .activityBackgroundTint(Color.black.opacity(0.88))
                 .activitySystemActionForegroundColor(.white)
                 .widgetURL(openURL)
         } dynamicIsland: { context in
             let s = OrbState(rawValue: context.state.state) ?? .sleep
+            let stale = context.isStale   // Қосымша жабық: айдаһар сұр
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Image(s.dragon).resizable().scaledToFit().frame(width: 120, height: 80)
+                    Image(s.dragon).resizable().scaledToFit().frame(width: 120, height: 80).grayscale(stale ? 1 : 0).opacity(stale ? 0.5 : 1)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    StatusMark(state: s).font(.title3).padding(.trailing, 4)
+                    StatusMark(state: s, stale: stale).font(.title3).padding(.trailing, 4)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    Text(context.state.banner.isEmpty ? s.label : context.state.banner)
-                        .font(.headline).foregroundStyle(s.accent).lineLimit(1)
+                    Text(stale ? "Алихан жабық, ашыңыз" : (context.state.banner.isEmpty ? s.label : context.state.banner))
+                        .font(.headline).foregroundStyle(stale ? Color.gray : s.accent).lineLimit(1)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     Lines(content: context.state)
                 }
             } compactLeading: {
-                Image(s.islandDragon).resizable().scaledToFit().frame(width: 60, height: 36)
+                Image(s.islandDragon).resizable().scaledToFit().frame(width: 60, height: 36).grayscale(stale ? 1 : 0).opacity(stale ? 0.5 : 1)
             } compactTrailing: {
-                StatusMark(state: s)
+                StatusMark(state: s, stale: stale)
             } minimal: {
-                Image(s.islandDragon).resizable().scaledToFit().frame(width: 40, height: 30)
+                Image(s.islandDragon).resizable().scaledToFit().frame(width: 40, height: 30).grayscale(stale ? 1 : 0).opacity(stale ? 0.5 : 1)
             }
             .widgetURL(openURL)
             .keylineTint(s.accent)
@@ -49,8 +50,9 @@ struct AlikhanLiveActivity: Widget {
 
 struct StatusMark: View {
     let state: OrbState
+    var stale = false
     var body: some View {
-        Image(systemName: state.symbol).foregroundStyle(state.accent)
+        Image(systemName: stale ? "moon.zzz" : state.symbol).foregroundStyle(stale ? Color.gray : state.accent)
     }
 }
 
@@ -71,14 +73,16 @@ struct Lines: View {
 
 struct LockScreenView: View {
     let content: AlikhanAttributes.ContentState
+    var stale = false
     var body: some View {
         let s = OrbState(rawValue: content.state) ?? .sleep
         HStack(spacing: 12) {
-            Image(s.dragon).resizable().scaledToFit().frame(width: 110, height: 74)
+            Image(s.dragon).resizable().scaledToFit().frame(width: 110, height: 74).grayscale(stale ? 1 : 0).opacity(stale ? 0.5 : 1)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
-                    StatusMark(state: s)
-                    Text(content.banner.isEmpty ? s.label : content.banner).font(.headline).foregroundStyle(s.accent)
+                    StatusMark(state: s, stale: stale)
+                    Text(stale ? "Алихан жабық, ашыңыз" : (content.banner.isEmpty ? s.label : content.banner))
+                        .font(.headline).foregroundStyle(stale ? Color.gray : s.accent)
                 }
                 Lines(content: content)
             }

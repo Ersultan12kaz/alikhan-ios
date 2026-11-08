@@ -68,6 +68,9 @@ final class Assistant: ObservableObject {
         Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.watchdog() }
         }
+        Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { _ in
+            MainActor.assumeIsolated { Island.shared.heartbeat() }
+        }
         if settings.pip { DragonPiP.shared.enable() }
         guard settings.configured else { return }
         afterSetup()
