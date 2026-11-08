@@ -1,0 +1,11 @@
+*.xcodeproj/
+*.xcworkspace/
+build/
+DerivedData/
+Alikhan/Info.plist
+AlikhanWidget/Info.plist
+*.p8
+*.pem
+*.key
+.env
+.DS_Store

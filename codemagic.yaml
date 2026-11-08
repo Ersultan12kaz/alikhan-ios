@@ -1,0 +1,39 @@
+workflows:
+  alikhan-ios:
+    name: Алихан iOS → TestFlight
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    integrations:
+      app_store_connect: alikhan_asc
+    environment:
+      groups:
+        - alikhan_signing        # CERTIFICATE_PRIVATE_KEY: Codemagic-те құпия айнымалы
+      xcode: latest
+      vars:
+        BUNDLE_ID: kz.ersultan.alikhan
+        WIDGET_BUNDLE_ID: kz.ersultan.alikhan.widget
+    scripts:
+      - name: Xcode жобасын жасау
+        script: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Қолтаңба файлдары
+        script: |
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          app-store-connect fetch-signing-files "$WIDGET_BUNDLE_ID" --type IOS_APP_STORE --create
+          keychain add-certificates
+          xcode-project use-profiles
+      - name: Құрастыру нөмірі
+        script: |
+          agvtool new-version -all "$BUILD_NUMBER"
+      - name: IPA құрастыру
+        script: |
+          xcode-project build-ipa --project "Alikhan.xcodeproj" --scheme "Alikhan"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
