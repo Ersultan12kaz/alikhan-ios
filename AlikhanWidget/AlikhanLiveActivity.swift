@@ -22,7 +22,7 @@ struct AlikhanLiveActivity: Widget {
             let s = OrbState(rawValue: context.state.state) ?? .sleep
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Image(s.dragon).resizable().scaledToFit().frame(width: 70, height: 48)
+                    Image(s.dragon).resizable().scaledToFit().frame(width: 104, height: 70)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     StatusMark(state: s).font(.title3).padding(.trailing, 4)
@@ -35,11 +35,11 @@ struct AlikhanLiveActivity: Widget {
                     Lines(content: context.state)
                 }
             } compactLeading: {
-                Image(s.dragon).resizable().scaledToFit().frame(width: 34, height: 24)
+                Image(s.dragon).resizable().scaledToFit().frame(width: 54, height: 36)
             } compactTrailing: {
                 StatusMark(state: s)
             } minimal: {
-                Image(s.dragon).resizable().scaledToFit().frame(width: 24, height: 20)
+                Image(s.dragon).resizable().scaledToFit().frame(width: 36, height: 30)
             }
             .widgetURL(openURL)
             .keylineTint(s.accent)
@@ -74,7 +74,7 @@ struct LockScreenView: View {
     var body: some View {
         let s = OrbState(rawValue: content.state) ?? .sleep
         HStack(spacing: 12) {
-            Image(s.dragon).resizable().scaledToFit().frame(width: 76, height: 52)
+            Image(s.dragon).resizable().scaledToFit().frame(width: 110, height: 74)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     StatusMark(state: s)

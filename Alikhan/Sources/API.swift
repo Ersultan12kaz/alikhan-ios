@@ -37,7 +37,18 @@ struct PhoneReply: Decodable {
 }
 
 struct Notice: Decodable {
+    var id: String?
     var voice_text: String?
+
+    enum CodingKeys: String, CodingKey { case id, voice_text }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        voice_text = try? c.decodeIfPresent(String.self, forKey: .voice_text)
+        // id сан не мәтін болуы мүмкін
+        if let s = try? c.decodeIfPresent(String.self, forKey: .id) { id = s }
+        else if let n = try? c.decodeIfPresent(Int.self, forKey: .id) { id = String(n) }
+    }
 }
 
 struct Encoded {

@@ -85,10 +85,10 @@ def main() -> None:
         (c / "Contents.json").write_text(json.dumps({"info": {"author": "xcode", "version": 1}}, indent=2))
     for state, color in HEART.items():
         img = tinted(arr, weight, color)
-        small = img.resize((150, round(150 * img.height / img.width)), Image.LANCZOS)
-        imageset(f"dragon_{state}", with_rim(small, 2), cat)          # Dynamic Island, құлып экраны
-        big = img.resize((480, round(480 * img.height / img.width)), Image.LANCZOS)
-        imageset(f"dragon_big_{state}", with_rim(big, 4), big_cat)    # PiP (тек қосымшада)
+        small = img.resize((330, round(330 * img.height / img.width)), Image.LANCZOS)
+        imageset(f"dragon_{state}", with_rim(small, 3), cat)          # Dynamic Island, құлып экраны
+        big = img.resize((960, round(960 * img.height / img.width)), Image.LANCZOS)
+        imageset(f"dragon_big_{state}", with_rim(big, 6), big_cat)    # PiP (тек қосымшада)
 
     # Қосымша белгісі: 1024, мөлдірліксіз (App Store талабы)
     icon = Image.new("RGBA", (1024, 1024), (0, 0, 0, 255))

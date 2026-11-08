@@ -1,13 +1,12 @@
-import SafariServices
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import WebKit
 
 struct ContentView: View {
     @EnvironmentObject var a: Assistant
     @EnvironmentObject var settings: Settings
     @State private var showSettings = false
-    @State private var browser: BrowserLink?
 
     var body: some View {
         ZStack {
@@ -15,9 +14,20 @@ struct ContentView: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 18) {
-                HStack {
+                HStack(spacing: 18) {
                     Text(a.orb.label).font(.subheadline).foregroundStyle(a.orb.accent)
                     Spacer()
+                    Button { a.showTasks = true } label: {
+                        Image(systemName: "checklist").font(.title2).foregroundStyle(.white.opacity(0.85))
+                            .overlay(alignment: .topTrailing) {
+                                let n = a.tasks.filter { !$0.done }.count
+                                if n > 0 {
+                                    Text("\(n)").font(.caption2.bold()).foregroundStyle(.white)
+                                        .padding(4).background(Circle().fill(Color(hex: 0xf43f5e))).offset(x: 8, y: -8)
+                                }
+                            }
+                    }
+                    .accessibilityLabel("Тапсырмаларым")
                     Button { showSettings = true } label: {
                         Image(systemName: "gearshape.fill").font(.title2).foregroundStyle(.white.opacity(0.8))
                     }
@@ -26,7 +36,7 @@ struct ContentView: View {
                 .padding(.horizontal, 20)
 
                 Spacer()
-                OrbView(state: a.orb)
+                DragonView(state: a.orb, width: 350)
                     .onTapGesture { a.toggleTalk() }
                     .accessibilityLabel("Алихан: \(a.orb.label)")
                 Spacer()
@@ -45,21 +55,29 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 20)
 
-                if let card = a.card {
-                    TaskCardView(card: card, open: { browser = BrowserLink(url: $0) }, done: { a.taskDone() })
-                        .padding(.horizontal, 16)
+                if let next = a.tasks.last(where: { !$0.done }) {
+                    Button { a.showTasks = true } label: {
+                        HStack {
+                            Image(systemName: "hand.raised.fill").foregroundStyle(Color(hex: 0xfbbf24))
+                            Text(next.text).lineLimit(1).foregroundStyle(.white)
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(.white.opacity(0.5))
+                        }
+                        .padding(14)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.08)))
+                    }
+                    .padding(.horizontal, 16)
                 }
 
                 if settings.pip {
                     PiPHost().frame(width: 120, height: 80).clipShape(RoundedRectangle(cornerRadius: 10))
-                        .overlay(alignment: .bottom) { Text("PiP").font(.caption2).foregroundStyle(.white.opacity(0.5)) }
                 }
             }
             .padding(.vertical, 12)
         }
         .sheet(isPresented: $showSettings) { SettingsView().environmentObject(settings).environmentObject(a) }
+        .sheet(isPresented: $a.showTasks) { TasksView().environmentObject(a) }
         .fullScreenCover(isPresented: .constant(!settings.configured)) { SettingsView(onboarding: true).environmentObject(settings).environmentObject(a) }
-        .sheet(item: $browser) { SafariView(url: $0.url).ignoresSafeArea() }
         .fullScreenCover(item: $a.capture) { req in
             CaptureView(video: req.video) { file, mime in a.captureFinished(file: file, mime: mime, request: req) }
                 .ignoresSafeArea()
@@ -68,41 +86,113 @@ struct ContentView: View {
     }
 }
 
-struct BrowserLink: Identifiable {
-    let url: URL
-    var id: String { url.absoluteString }
-}
-
-/// Сервердегі агент күтіп тұр: сұрақ, «Ашу» (кіру беті) және «Жасадым».
-/// Логин мен парольді қолданушы сол бетте өзі енгізеді: қосымша оны көрмейді.
-struct TaskCardView: View {
-    let card: TaskCard
-    let open: (URL) -> Void
-    let done: () -> Void
+/// «Тапсырмаларым»: сервердегі агент сізден күтетін істер.
+/// Әрқайсысында «Орындадым»: басылса, серверге хабар кетеді.
+struct TasksView: View {
+    @EnvironmentObject var a: Assistant
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Тапсырма сізді күтіп тұр", systemImage: "hand.raised.fill").font(.headline).foregroundStyle(Color(hex: 0xfbbf24))
-            Text(card.text).font(.callout).foregroundStyle(.white)
-            HStack {
-                ForEach(card.links, id: \.absoluteString) { link in
-                    Button { open(link) } label: { Label("Ашу", systemImage: "safari") }
-                        .buttonStyle(.bordered)
+        NavigationStack {
+            List {
+                let pending = a.tasks.filter { !$0.done }.reversed()
+                let done = a.tasks.filter { $0.done }.reversed()
+                Section {
+                    if pending.isEmpty {
+                        Text("Қазір сізден күтетін ештеңе жоқ").foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(pending)) { task in
+                        TaskRow(task: task)
+                    }
+                } header: { Text("Сізден күтеді") }
+
+                if !done.isEmpty {
+                    Section("Орындалды") {
+                        ForEach(Array(done)) { task in
+                            Label(task.text, systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.secondary).lineLimit(2)
+                                .swipeActions { Button("Өшіру", role: .destructive) { a.removeTask(task) } }
+                        }
+                    }
                 }
-                Spacer()
-                Button(action: done) { Label("Жасадым", systemImage: "checkmark") }
-                    .buttonStyle(.borderedProminent).tint(Color(hex: 0x10b981))
             }
+            .navigationTitle("Тапсырмаларым")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Жабу") { dismiss() } } }
+            .fullScreenCover(item: $a.webTask) { task in LoginView(task: task).environmentObject(a) }
         }
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.08)))
     }
 }
 
-struct SafariView: UIViewControllerRepresentable {
+struct TaskRow: View {
+    @EnvironmentObject var a: Assistant
+    let task: UserTask
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(task.text).font(.callout)
+            Text(task.created, style: .relative).font(.caption).foregroundStyle(.secondary)
+            HStack {
+                if !task.links.isEmpty {
+                    Button { a.webTask = task } label: { Label("Ашу", systemImage: "arrow.up.forward.app") }
+                        .buttonStyle(.bordered)
+                }
+                Spacer()
+                Button { a.taskDone(task) } label: { Label("Орындадым", systemImage: "checkmark") }
+                    .buttonStyle(.borderedProminent).tint(Color(hex: 0x10b981))
+            }
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+/// Қосымша ішіндегі кіру беті. Логин мен парольді сіз осы бетте өзіңіз енгізесіз:
+/// Алихан бет ішіне ештеңе жазбайды, ештеңе оқымайды, серверге жібермейді.
+struct LoginView: View {
+    @EnvironmentObject var a: Assistant
+    @Environment(\.dismiss) private var dismiss
+    let task: UserTask
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Text(task.text).font(.footnote).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                Divider()
+                if let url = task.links.first { WebView(url: url) }
+                Divider()
+                Button { a.taskDone(task); dismiss() } label: {
+                    Label("Орындадым", systemImage: "checkmark").frame(maxWidth: .infinity).padding(.vertical, 6)
+                }
+                .buttonStyle(.borderedProminent).tint(Color(hex: 0x10b981)).padding(12)
+            }
+            .navigationTitle(task.links.first?.host ?? "Кіру")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Жабу") { dismiss() } }
+                if let url = task.links.first {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { UIApplication.shared.open(url) } label: { Image(systemName: "safari") }
+                            .accessibilityLabel("Safari-де ашу")
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct WebView: UIViewRepresentable {
     let url: URL
-    func makeUIViewController(context: Context) -> SFSafariViewController { SFSafariViewController(url: url) }
-    func updateUIViewController(_ vc: SFSafariViewController, context: Context) {}
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()   // Кіргеннен кейін cookie сақталады
+        let view = WKWebView(frame: .zero, configuration: config)
+        view.allowsBackForwardNavigationGestures = true
+        view.load(URLRequest(url: url))
+        return view
+    }
+
+    func updateUIView(_ view: WKWebView, context: Context) {}
 }
 
 struct SettingsView: View {

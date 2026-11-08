@@ -1,10 +1,13 @@
 import AVFoundation
 import SwiftUI
 
-struct TaskCard: Identifiable {
-    let id = UUID()
-    let text: String
-    let links: [URL]
+/// Сервердегі агент сізден күтетін іс: кіру, растау, түсіру т.б.
+struct UserTask: Identifiable, Codable, Equatable {
+    var id: String
+    var text: String
+    var links: [URL]
+    var created: Date
+    var done: Bool = false
 }
 
 struct CaptureRequest: Identifiable {
@@ -25,7 +28,9 @@ final class Assistant: ObservableObject {
     @Published private(set) var heard = ""
     @Published private(set) var said = ""
     @Published private(set) var banner = ""
-    @Published var card: TaskCard?
+    @Published private(set) var tasks: [UserTask] = Assistant.loadTasks()
+    @Published var showTasks = false          // «Тапсырмаларым» беті
+    @Published var webTask: UserTask?         // Қосымша ішіндегі кіру беті
     @Published var capture: CaptureRequest?
     @Published var status = ""
     @Published private(set) var wakeSendsLastHour = 0
@@ -40,7 +45,7 @@ final class Assistant: ObservableObject {
     private var talkTask: Task<Void, Never>?
     private var idleDeadline = Date()
     private var booted = false
-    private var notices: [String] = []
+    private var notices: [Notice] = []
     private var noticesTask: Task<Void, Never>?
     private var remindersCheckedAt = Date.distantPast
     private var remindersMissing = false
@@ -215,7 +220,7 @@ final class Assistant: ObservableObject {
         let words = tail.split(separator: " ").count
         // «Алихан, анама қоңырау шал»: сұрақ айтылып қойған, қайта сұрамаймыз.
         // Тапсырма күтіп тұрса, «Алихан, жасадым» да бірден кетеді.
-        if words >= 2 || (card != nil && tail.contains("жасад")) {
+        if words >= 2 || (hasPendingTasks && tail.contains("жасад")) {
             banner = ""
             ask(text: tail)
             return
@@ -264,7 +269,7 @@ final class Assistant: ObservableObject {
         if let h = r.heard, !h.isEmpty { heard = h }
         if let t = r.text, !t.isEmpty { said = t }
         banner = ""
-        if heard.lowercased().contains("жасад") { card = nil }
+        if heard.lowercased().contains("жасад"), let last = tasks.last(where: { !$0.done }) { setDone(last) }
         if let items = r.reminders, !items.isEmpty { Task { await Reminders.shared.add(items) } }
         if let b64 = r.audio, !b64.isEmpty, let data = Data(base64Encoded: b64, options: .ignoreUnknownCharacters) {
             setOrb(.speak)
@@ -322,9 +327,45 @@ final class Assistant: ObservableObject {
         }
     }
 
-    func taskDone() {
-        card = nil
+    // MARK: Тапсырмаларым
+
+    var hasPendingTasks: Bool { tasks.contains { !$0.done } }
+
+    private static func loadTasks() -> [UserTask] {
+        guard let data = UserDefaults.standard.data(forKey: "userTasks"),
+              let list = try? JSONDecoder().decode([UserTask].self, from: data) else { return [] }
+        return list
+    }
+
+    private func saveTasks() {
+        tasks = Array(tasks.suffix(50))
+        if let data = try? JSONEncoder().encode(tasks) { UserDefaults.standard.set(data, forKey: "userTasks") }
+    }
+
+    private func addTask(id: String?, text: String) {
+        let key = id ?? text
+        guard !tasks.contains(where: { $0.id == key }) else { return }
+        tasks.append(UserTask(id: key, text: text, links: Phone.links(in: text), created: Date()))
+        saveTasks()
+        showTasks = true   // Жаңа тапсырма: бет өзі ашылады
+    }
+
+    private func setDone(_ task: UserTask) {
+        guard let i = tasks.firstIndex(where: { $0.id == task.id }) else { return }
+        tasks[i].done = true
+        saveTasks()
+    }
+
+    /// «Орындадым»: серверге хабар кетеді (сервер «жасадым» сөзін күтіп тұр)
+    func taskDone(_ task: UserTask) {
+        setDone(task)
+        webTask = nil
         ask(text: "жасадым")
+    }
+
+    func removeTask(_ task: UserTask) {
+        tasks.removeAll { $0.id == task.id }
+        saveTasks()
     }
 
     func handle(url: URL) {
@@ -354,7 +395,7 @@ final class Assistant: ObservableObject {
                     let peek = try await API.shared.notifications(ack: false, wait: 20)
                     if !peek.isEmpty {
                         let items = try await API.shared.notifications(ack: true, wait: 0)
-                        self.notices += items.compactMap { $0.voice_text?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                        self.notices += items.filter { !($0.voice_text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                         self.drainNotices()
                     }
                     await self.syncReminders()
@@ -371,9 +412,10 @@ final class Assistant: ObservableObject {
     func drainNotices() {
         guard !speakingNotice, !notices.isEmpty, mode != .talk, !audio.isPlaying else { return }
         speakingNotice = true
-        let text = notices.removeFirst()
-        let isQuestion = text.contains("күтіп тұр") || text.lowercased().contains("жасадым")
-        if isQuestion { card = TaskCard(text: text, links: Phone.links(in: text)) }
+        let notice = notices.removeFirst()
+        let text = (notice.voice_text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Агент сізді күтіп тұр: «Тапсырмаларым» бетіне түседі
+        if text.contains("күтіп тұр") || text.lowercased().contains("жасадым") { addTask(id: notice.id, text: text) }
         Task {
             let before = orb
             said = text
