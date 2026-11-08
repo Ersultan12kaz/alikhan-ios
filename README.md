@@ -22,19 +22,20 @@ Mac жоқ, сондықтан құрастыруды Codemagic жасайды: 
 
 ## Ерсұлтан жасайтыны
 
-1. **Apple Developer → Identifiers:** екі Bundle ID тіркеу: `kz.ersultan.alikhan` және `kz.ersultan.alikhan.widget`. Қосымша capability керек емес.
-2. **App Store Connect → Мои приложения → +:** «Алихан», Bundle ID `kz.ersultan.alikhan`, SKU `alikhan`.
-3. **GitHub:** жабық `alikhan-ios` репозиторийін ашып, осы папканы жіберу:
+App Store Connect API кілті мен сертификат ClipPay-де бар, соларды қайта қолданамыз (жаңа сертификат жасалмайды).
+Bundle ID-лерді Codemagic өзі тіркейді.
+
+1. **App Store Connect → Мои приложения → +:** «Алихан», Bundle ID `kz.ersultan.alikhan` (тізімде болмаса, алғашқы құрастырудан кейін шығады), SKU `alikhan`.
+2. **GitHub:** бос жабық `Ersultan12kaz/alikhan-ios` репозиторийін ашу (README-сіз). Сосын жіберу:
    ```
    cd ~/alikhan-ios
-   git remote add origin git@github.com:<сіздің-логин>/alikhan-ios.git
+   git remote add origin https://github.com/Ersultan12kaz/alikhan-ios.git
    git push -u origin main
    ```
-4. **App Store Connect → Users and Access → Integrations → App Store Connect API:** кілт жасау, рөлі **App Manager**. `.p8` файлын, Issuer ID және Key ID-ді сақтаңыз.
-5. **Codemagic:** GitHub арқылы кіру → репозиторийді қосу → *Team settings → Team integrations → Developer Portal → Manage keys → Add key*. Атауы дәл **`alikhan_asc`** болсын. Оған Issuer ID, Key ID, `.p8` файлы.
-6. **Codemagic → репозиторий → Environment variables:** топ **`alikhan_signing`**, айнымалы **`CERTIFICATE_PRIVATE_KEY`**, мәні: `~/alikhan-ios-keys/codemagic_cert_key.pem` файлының бүкіл мәтіні. **Secure** белгісін қойыңыз. Бұл кілт ноутбукта ғана, репозиторийде жоқ.
-7. **Codemagic → Start new build →** `alikhan-ios` workflow. Қате шықса, журналдың соңғы 30-40 жолын маған жіберіңіз.
-8. **iPhone:** TestFlight-ты App Store-дан орнатып, «Алиханды» сол арқылы орнату. Tailscale қосулы болсын.
+3. **Codemagic → Add application →** `alikhan-ios`.
+4. **Codemagic → alikhan-ios → Environment variables:** `appstore_credentials` тобын ClipPay-дегідей толтыру (4 айнымалы, бәрі Secure). Мәндері ClipPay-дегімен бірдей: `.p8` және `~/clippay-keys/ios_distribution_private_key`.
+5. **Start new build →** `alikhan-ios`. Қате шықса, журналдың соңғы жолдарын маған жіберіңіз.
+6. **iPhone:** TestFlight арқылы «Алиханды» орнату. Tailscale қосулы болсын.
 
 ## «Алихан басқару» Shortcut-ы (музыка басқару)
 

@@ -1,24 +1,32 @@
+# Алихан — Codemagic (бұлттағы Mac). Құпиялар бұл файлда ЖОҚ.
+# ClipPay-дегідей "appstore_credentials" тобы керек (Codemagic → осы app → Environment variables):
+#   APP_STORE_CONNECT_ISSUER_ID, APP_STORE_CONNECT_KEY_IDENTIFIER, APP_STORE_CONNECT_PRIVATE_KEY (.p8, Secure),
+#   CERTIFICATE_PRIVATE_KEY (ClipPay-дегі дистрибуция сертификатының кілті, Secure)
 workflows:
   alikhan-ios:
     name: Алихан iOS → TestFlight
     instance_type: mac_mini_m2
     max_build_duration: 60
-    integrations:
-      app_store_connect: alikhan_asc
     environment:
       groups:
-        - alikhan_signing        # CERTIFICATE_PRIVATE_KEY: Codemagic-те құпия айнымалы
+        - appstore_credentials
       xcode: latest
       vars:
         BUNDLE_ID: kz.ersultan.alikhan
         WIDGET_BUNDLE_ID: kz.ersultan.alikhan.widget
+        APP_STORE_APP_ID: ""   # App Store Connect-тегі сандық ID (жазба ашылған соң қоямыз)
     scripts:
       - name: Xcode жобасын жасау
         script: |
           brew install xcodegen
           xcodegen generate
+      - name: Bundle ID (жоқ болса, тіркейді)
+        script: |
+          app-store-connect bundle-ids create "$BUNDLE_ID" --name "Alikhan" --platform IOS || echo "бар"
+          app-store-connect bundle-ids create "$WIDGET_BUNDLE_ID" --name "Alikhan Widget" --platform IOS || echo "бар"
       - name: Қолтаңба файлдары
         script: |
+          set -e
           keychain initialize
           app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
           app-store-connect fetch-signing-files "$WIDGET_BUNDLE_ID" --type IOS_APP_STORE --create
@@ -26,7 +34,14 @@ workflows:
           xcode-project use-profiles
       - name: Құрастыру нөмірі
         script: |
-          agvtool new-version -all "$BUILD_NUMBER"
+          LATEST=""
+          if [ -n "$APP_STORE_APP_ID" ]; then
+            LATEST=$(app-store-connect get-latest-build-number "$APP_STORE_APP_ID" 2>/dev/null | tail -1 | tr -dc '0-9')
+          fi
+          # Нөмір алынбаса: уақыт бойынша, әрқашан өседі
+          if [ -n "$LATEST" ]; then N=$((LATEST + 1)); else N=$(date -u +%y%m%d%H%M); fi
+          echo "Құрастыру нөмірі: $N (BUILD_NUMBER=$BUILD_NUMBER)"
+          agvtool new-version -all $N
       - name: IPA құрастыру
         script: |
           xcode-project build-ipa --project "Alikhan.xcodeproj" --scheme "Alikhan"
@@ -35,5 +50,8 @@ workflows:
       - /tmp/xcodebuild_logs/*.log
     publishing:
       app_store_connect:
-        auth: integration
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
         submit_to_testflight: true
+        submit_to_app_store: false
