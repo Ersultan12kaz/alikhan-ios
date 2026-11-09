@@ -502,8 +502,10 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
             self.normalMax = maxLength
             let want = self.isPlaying && !self.isPaused ? 2.8 : maxLength
             if self.vad.maxLength != want {
+                // Шек ұзарса (ояту → сөйлесу), айтылып жатқан сөйлемді жоғалтпаймыз; қысқарса ғана тазалаймыз
+                let shorter = want < self.vad.maxLength
                 self.vad.maxLength = want
-                self.vad.reset()
+                if shorter { self.vad.reset() }
             }
         }
     }
