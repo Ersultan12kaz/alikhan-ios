@@ -427,12 +427,13 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
         do {
             let req = try SNClassifySoundRequest(classifierIdentifier: .version1)
             let want = CMTime(seconds: 0.5, preferredTimescale: 16000)
-            let c = req.windowDurationConstraint
-            if c.type == .enumerated {
-                let list = c.enumeratedDurations.map(\.timeValue)
+            switch req.windowDurationConstraint {
+            case .enumeratedDurations(let list):
                 if let best = list.min(by: { abs($0.seconds - 0.5) < abs($1.seconds - 0.5) }) { req.windowDuration = best }
-            } else if c.type == .range, c.durationRange.containsTime(want) {
-                req.windowDuration = want
+            case .durationRange(let range):
+                if range.containsTime(want) { req.windowDuration = want }
+            @unknown default:
+                break
             }
             req.overlapFactor = 0.5
             speechObserver.onSpeech = { [weak self] p in
