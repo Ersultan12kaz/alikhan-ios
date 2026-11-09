@@ -404,7 +404,7 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
         guard format.sampleRate > 0, format.channelCount > 0 else { throw APIError.status(-1) }
         converter = AVAudioConverter(from: format, to: target)
         // 48 → 16 кГц: ең жоғары сапамен (сөз танудың дәлдігі үшін)
-        converter?.sampleRateConverterQuality = .max
+        converter?.sampleRateConverterQuality = AVAudioQuality.max.rawValue
         converter?.sampleRateConverterAlgorithm = AVSampleRateConverterAlgorithm_Mastering
         setupAnalyzer()
         input.removeTap(onBus: 0)
