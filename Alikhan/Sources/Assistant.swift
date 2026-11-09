@@ -65,6 +65,8 @@ final class Assistant: ObservableObject {
     private var spinning = false             // Тапсырма жүріп жатыр: айдаһар күлгін болып айналады
     private var serverSaid = ""
     private var noticeFailures = 0
+    private var outageSince: Date?
+    private var outageSpoken = false
 
     private init() {}
 
@@ -127,7 +129,10 @@ final class Assistant: ObservableObject {
 
     /// Сөйлесу: батырмасыз, 0,8 с үнсіздік — сөйлем кетеді.
     func startTalk(idle: TimeInterval = 8, followUp: Bool = false) {
-        guard ensureAudio(maxLength: 15, minSpeech: followUp ? 0.15 : 0.4) else { return }
+        guard ensureAudio(maxLength: 15, minSpeech: followUp ? 0.15 : 0.4) else {
+            mode = .talk   // Микрофон ашылмады: «өшірулі» болып қалмайды, бақылаушы қайта ашып көреді
+            return
+        }
         mode = .talk
         idleDeadline = Date().addingTimeInterval(idle)
         banner = ""
@@ -178,8 +183,22 @@ final class Assistant: ObservableObject {
     func startFromSiri() {
         boot()
         guard settings.configured else { return }
-        startTalk()
-        audio.beep()
+        mode = .talk
+        setOrb(.think)
+        // Siri сөйлеп болып, микрофонды босатқанша күтеміз, сосын 5 секунд ішінде бірнеше рет ашып көреміз
+        Task {
+            for attempt in 0..<8 {
+                try? await Task.sleep(nanoseconds: attempt == 0 ? 900_000_000 : 600_000_000)
+                guard mode != .off else { return }
+                if ensureAudio(maxLength: 15) {
+                    startTalk()
+                    audio.beep()
+                    return
+                }
+            }
+            // Бәрібір ашылмаса: сөйлесу күйінде қалады, бақылаушы микрофонды 5 секунд сайын қайта ашып көреді
+            status = "Микрофон бос емес: қайта ашып көремін"
+        }
     }
 
     func toggleTalk() {
@@ -311,7 +330,10 @@ final class Assistant: ObservableObject {
             restarts.removeAll()
         }
         audio.stop()
-        if ensureAudio(maxLength: mode == .wake ? 4.5 : 15), orb == .error { setOrb(mode == .wake ? .sleep : .listen) }
+        if ensureAudio(maxLength: mode == .wake ? 4.5 : 15), orb == .error || orb == .think && !audio.isPlaying && talkTask == nil {
+            idleDeadline = Date().addingTimeInterval(8)
+            setOrb(mode == .wake ? .sleep : .listen)
+        }
     }
 
     private var restarts: [Date] = []
@@ -635,6 +657,8 @@ final class Assistant: ObservableObject {
                 do {
                     let peek = try await API.shared.notifications(ack: false, wait: 20)
                     self.noticeFailures = 0
+                    self.outageSince = nil
+                    self.outageSpoken = false
                     if !peek.isEmpty {
                         let items = try await API.shared.notifications(ack: true, wait: 0)
                         self.notices += items
@@ -648,8 +672,12 @@ final class Assistant: ObservableObject {
                     }
                 } catch {
                     // Желі қатесі: 5 рет 1–2 с аралықпен қайталайды, сосын бір рет қысқа айтады. Қосымша құламайды.
+                    // Ашылған сәтте VPN әлі қосылмаған болуы мүмкін: тек 30 с-тан ұзақ үзілсе және экран ашық болса, бір рет айтады
                     self.noticeFailures += 1
-                    if self.noticeFailures == 5 {
+                    if self.outageSince == nil { self.outageSince = Date() }
+                    if let since = self.outageSince, Date().timeIntervalSince(since) > 30,
+                       !self.outageSpoken, self.appActive {
+                        self.outageSpoken = true
                         self.notices.append(Notice.local("Сервер қатесі"))
                         self.drainNotices()
                     }
