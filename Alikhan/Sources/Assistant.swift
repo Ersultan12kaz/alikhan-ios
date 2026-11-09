@@ -356,9 +356,9 @@ final class Assistant: ObservableObject {
         guard !bargeChecking else { return }
         // Алиханның өз жауабында «Алихан» болса, бөлу мүлде қосылмайды
         if Wake.tail(said) != nil || Wake.tail(serverSaid) != nil { return }
-        // Тек анық адам сөзі (танығыш ≥ 70%) және 3 с-та бір реттен жиі емес: Алиханның өз дауысының жаңғырығы кетпесін
+        // Промттағы «сөз» (танығыш ≥ 0,5) және 3 с-та бір реттен жиі емес: Алиханның өз дауысының жаңғырығы қайта-қайта кетпесін
         let now = Date()
-        guard audio.vad.speechProb >= 0.7 || !audio.vad.useClassifier,
+        guard audio.vad.speechProb >= 0.5 || !audio.vad.useClassifier,
               now.timeIntervalSince(lastWakeSend) >= 3 else { return }
         lastWakeSend = now
         bargeChecking = true
@@ -382,10 +382,6 @@ final class Assistant: ObservableObject {
     // MARK: «Алихан»
 
     private func confirmWake(_ samples: [Float]) {
-        // Бір сөйлемді бөлшектеп қайта-қайта жібермейміз: 1 с-та бір реттен жиі емес (екі сөйлем арасы бәрібір ≥ 1,2 с)
-        let now = Date()
-        guard now.timeIntervalSince(lastWakeSend) >= 1.0 else { return }
-        lastWakeSend = now
         WakeCounter.add()
         wakeSendsLastHour = WakeCounter.lastHour
         Task {
