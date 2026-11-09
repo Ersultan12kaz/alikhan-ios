@@ -37,6 +37,8 @@ final class Assistant: ObservableObject {
     @Published var capture: CaptureRequest?
     @Published var status = ""
     @Published private(set) var wakeSendsLastHour = 0
+    @Published private(set) var micLevelDB: Float = -90      // Баптау бетінде: микрофон деңгейі
+    @Published private(set) var speechConfidence: Float = 0  // «Бұл адам сөзі» сенімділігі
 
     let settings = Settings.shared
     let audio = AudioIO()
@@ -57,6 +59,9 @@ final class Assistant: ObservableObject {
     private var appActive = false
     // Сөйлеп тұрғанда «Алихан» деп бөлу
     private var bargeChecking = false
+    private var lastWakeSend = Date.distantPast
+    private var wakeEarlyChecked = false
+    @Published private(set) var lastWakeHeard = ""   // Баптау бетінде: сервер соңғы рет не естіді
     private var bargeListening = false
     private var bargeDeadline = Date()
     // GET /expect
@@ -78,6 +83,10 @@ final class Assistant: ObservableObject {
         audio.onEvent = { [weak self] e in self?.handle(e) }
         audio.onInterrupted = { [weak self] in self?.interrupted = true }
         audio.onResume = { [weak self] in self?.resumeAudio() }
+        audio.onLevel = { [weak self] db, p in
+            self?.micLevelDB = db
+            self?.speechConfidence = p
+        }
         Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -261,7 +270,16 @@ final class Assistant: ObservableObject {
             let id = earlyId
             earlyId = nil
             ask(samples: samples, earlyId: id)
+        case (.wake, .early(let samples)):
+            // «Алихан» + 0,2 с үнсіздік: бірден растатамыз (сөйлем соңын 0,8 с күтпей)
+            if audio.vad.segmentIsSpeech {
+                wakeEarlyChecked = true
+                confirmWake(samples)
+            }
+        case (.wake, .resumed):
+            wakeEarlyChecked = false
         case (.wake, .utterance(let samples)):
+            if wakeEarlyChecked { wakeEarlyChecked = false; return }   // Бұл бөлік тексерілді
             confirmWake(samples)
         default:
             break
@@ -273,7 +291,7 @@ final class Assistant: ObservableObject {
         let id = (0..<4).map { _ in String(format: "%08x", UInt32.random(in: 0...UInt32.max)) }.joined()
         earlyId = id
         Task.detached {
-            try? await API.shared.sttEarly(id: id, audio: Encoder.compress(samples))
+            try? await API.shared.sttEarly(id: id, audio: Encoder.speech(samples))
         }
     }
 
@@ -349,6 +367,11 @@ final class Assistant: ObservableObject {
         guard !bargeChecking else { return }
         // Алиханның өз жауабында «Алихан» болса, бөлу мүлде қосылмайды
         if Wake.tail(said) != nil || Wake.tail(serverSaid) != nil { return }
+        // Промттағы «сөз» (танығыш ≥ 0,5) және 3 с-та бір реттен жиі емес: Алиханның өз дауысының жаңғырығы қайта-қайта кетпесін
+        let now = Date()
+        guard audio.vad.speechProb >= 0.5 || !audio.vad.useClassifier,
+              now.timeIntervalSince(lastWakeSend) >= 3 else { return }
+        lastWakeSend = now
         bargeChecking = true
         let tail = Array(samples.suffix(Int(2.5 * VAD.rate)))
         WakeCounter.add()
@@ -374,13 +397,19 @@ final class Assistant: ObservableObject {
         wakeSendsLastHour = WakeCounter.lastHour
         Task {
             let encoded = await Task.detached { Encoder.compress(samples) }.value
-            guard let text = try? await API.shared.wakeConfirm(encoded), mode == .wake, let tail = Wake.tail(text) else { return }
+            guard let text = try? await API.shared.wakeConfirm(encoded) else { return }
+            let f = DateFormatter()
+            f.dateFormat = "HH:mm:ss"
+            lastWakeHeard = "\(f.string(from: Date())) · «\(text)»"
+            guard mode == .wake, let tail = Wake.tail(text) else { return }
             wakeConfirmed(tail: tail)
         }
     }
 
     private func wakeConfirmed(tail: String) {
-        audio.beep()
+        // Қолданушы әлі сөйлеп жатса, бип оның сөзін кеспесін (бип микрофон бөлігін тазалайды)
+        let stillSpeaking = audio.vad.speaking
+        if !stillSpeaking { audio.beep() }
         guard ensureAudio(maxLength: 15) else { return }
         mode = .talk
         idleDeadline = Date().addingTimeInterval(5)
@@ -394,6 +423,14 @@ final class Assistant: ObservableObject {
                 try? await Task.sleep(nanoseconds: 200_000_000)   // Бип бітсін, сұраққа қосылмасын
                 ask(text: tail)
             }
+            return
+        }
+        // Қолданушы сөйлеп жатыр («Алихан, ертең…»): сөзін бөлмейміз, жалғасы сұрақ болып кетеді
+        if stillSpeaking {
+            banner = Assistant.listening
+            setOrb(.listen, alert: Assistant.listening)
+            idleDeadline = Date().addingTimeInterval(8)
+            _ = ensureAudio(maxLength: 15, minSpeech: 0.15)
             return
         }
         banner = Assistant.listening
@@ -423,7 +460,7 @@ final class Assistant: ObservableObject {
             do {
                 let reply: PhoneReply
                 if let samples {
-                    let encoded = await Task.detached { Encoder.compress(samples) }.value
+                    let encoded = await Task.detached { Encoder.speech(samples) }.value
                     reply = try await API.shared.phone(audio: encoded, earlyId: earlyId)
                 } else {
                     reply = try await API.shared.phone(text: text ?? "")
@@ -704,7 +741,13 @@ final class Assistant: ObservableObject {
             let before = orb
             said = text
             setOrb(.speak)
-            await say(text)
+            // WhatsApp т.б.: дауыс дайын келсе (audio_url), /speak-ті шақырмай бірден ойнатамыз
+            if let s = notice.audio_url, !s.isEmpty, let url = URL(string: s) {
+                audio.onFirstAudio = nil
+                await audio.play(url: url)
+            } else {
+                await say(text)
+            }
             speakingNotice = false
             if notice.kind == "question", mode != .talk || orb != .think {
                 // Сұрақ тек дауыспен: жауабын 8 секунд тыңдаймыз, ол /phone-ға кетеді
