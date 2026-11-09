@@ -407,43 +407,26 @@ final class Assistant: ObservableObject {
         }
     }
 
+    /// Сервер «Алихан»-ды растады: бип, сосын бірден тыңдау (8 с). Дауыстап ештеңе айтпаймыз:
+    /// қолданушы бипті естіген бойда сөйлейді, «Тыңдап тұрмын» дауысы оның сөзін басып кетпесін.
     private func wakeConfirmed(tail: String) {
-        // Қолданушы әлі сөйлеп жатса, бип оның сөзін кеспесін (бип микрофон бөлігін тазалайды)
-        let stillSpeaking = audio.vad.speaking
-        if !stillSpeaking { audio.beep() }
-        guard ensureAudio(maxLength: 15) else { return }
+        audio.beep()
+        guard ensureAudio(maxLength: 15, minSpeech: 0.15) else { return }
         mode = .talk
-        idleDeadline = Date().addingTimeInterval(5)
+        idleDeadline = Date().addingTimeInterval(8)
         let words = tail.split(separator: " ").count
-        // «Алихан, ертең ауа райы қандай»: сұрақ айтылып қойған, қайта сұрамаймыз.
-        // Тапсырма күтіп тұрса, «Алихан, жасадым» да бірден кетеді.
+        // Сервер «Алихан»-нан кейін сұрақты да естіп қойса (2+ сөз), қайта сұрамаймыз
         if words >= 2 || (!asks.isEmpty && tail.contains("жасад")) {
             banner = ""
             setOrb(.think)
             Task {
-                try? await Task.sleep(nanoseconds: 200_000_000)   // Бип бітсін, сұраққа қосылмасын
+                try? await Task.sleep(nanoseconds: 200_000_000)   // Бип бітсін
                 ask(text: tail)
             }
             return
         }
-        // Қолданушы сөйлеп жатыр («Алихан, ертең…»): сөзін бөлмейміз, жалғасы сұрақ болып кетеді
-        if stillSpeaking {
-            banner = Assistant.listening
-            setOrb(.listen, alert: Assistant.listening)
-            idleDeadline = Date().addingTimeInterval(8)
-            _ = ensureAudio(maxLength: 15, minSpeech: 0.15)
-            return
-        }
         banner = Assistant.listening
-        said = Assistant.listening
-        setOrb(.speak, alert: Assistant.listening)
-        let my = gen
-        Task {
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            await say(Assistant.listening)
-            guard my == gen, mode == .talk else { return }
-            listenAfterReply(5)   // Шақырған соң үндемесе, 5 секундта ұйқы
-        }
+        setOrb(.listen, alert: Assistant.listening)   // Экранда және Dynamic Island-та ғана
     }
 
     // MARK: Сөйлесу
