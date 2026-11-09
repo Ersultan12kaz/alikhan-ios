@@ -30,7 +30,10 @@ final class VAD {
     private var voicedRun = 0
     private var silenceFrames = 0
     private var earlySent = false
-    private var segmentProb: Float = 0     // Осы сөйлем бойы танығыштың ең жоғары «сөз» сенімділігі
+    private var segmentHits = 0            // Осы сөйлем бойы танығыш неше рет «сөз» деді
+    private var lastCounted: TimeInterval = 0
+    /// Сөйлем әзірге сөз бе (алдын ала жіберу үшін)
+    var segmentIsSpeech: Bool { !useClassifier || segmentHits >= 2 }
 
     enum Event {
         case started
@@ -48,7 +51,7 @@ final class VAD {
         voicedRun = 0
         silenceFrames = 0
         earlySent = false
-        segmentProb = 0
+        segmentHits = 0
     }
 
     /// Танығыштың соңғы нәтижесі (0,25 с сайын келеді)
@@ -74,7 +77,11 @@ final class VAD {
         // Сондықтан сөз басы деңгеймен ұсталады, ал танығыш шешімі сөйлем біткенде бүкіл сөйлем бойынша тексеріледі.
         let loud = smooth > noise * ratio
         if !inSpeech && !loud { updateNoise(rms) }
-        if inSpeech, ProcessInfo.processInfo.systemUptime - speechAt < 0.8 { segmentProb = max(segmentProb, speechProb) }
+        // Танығыштың әр жаңа нәтижесін бір рет санаймыз: кемінде 2 рет «сөз» болса ғана сөйлем
+        if inSpeech, speechAt > lastCounted {
+            lastCounted = speechAt
+            if speechProb >= 0.5 { segmentHits += 1 }
+        }
 
         if !inSpeech {
             pre.append(f)
@@ -82,7 +89,8 @@ final class VAD {
             voicedRun = loud ? voicedRun + 1 : 0
             if Double(voicedRun) * frameS >= minSpeech {
                 inSpeech = true
-                segmentProb = ProcessInfo.processInfo.systemUptime - speechAt < 0.8 ? speechProb : 0
+                // Сөз басталғанда танығыш соңғы 0,8 с ішінде «сөз» деген болса, соны да санаймыз
+                if ProcessInfo.processInfo.systemUptime - speechAt < 0.8, speechProb >= 0.5 { segmentHits = 1; lastCounted = speechAt }
                 buffer = pre.flatMap { $0 }
                 pre.removeAll()
                 silenceFrames = 0
@@ -105,7 +113,7 @@ final class VAD {
         let length = Double(buffer.count) / VAD.rate
         if silence >= endSilence || length >= maxLength {
             let out = buffer
-            let heardSpeech = !useClassifier || segmentProb >= 0.5
+            let heardSpeech = !useClassifier || segmentHits >= 2
             reset()
             // Танығыш бүкіл сөйлем бойы бірде-бір рет «сөз» демесе: шу не музыка, серверге жібермейміз
             return heardSpeech ? .utterance(out) : nil

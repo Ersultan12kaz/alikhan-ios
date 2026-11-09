@@ -257,6 +257,9 @@ struct SettingsView: View {
                         Slider(value: $settings.nearRatio, in: 1.2...3.0, step: 0.05)
                     }
                     LabeledContent("Соңғы сағатта /wake/confirm", value: "\(a.wakeSendsLastHour) рет")
+                    if !a.lastWakeHeard.isEmpty {
+                        LabeledContent("Сервер соңғы естігені", value: a.lastWakeHeard).font(.footnote)
+                    }
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
                             Text("Микрофон: \(Int(a.micLevelDB)) dB")
