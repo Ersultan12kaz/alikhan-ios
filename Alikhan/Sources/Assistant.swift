@@ -248,13 +248,13 @@ final class Assistant: ObservableObject {
         if bargeListening {
             switch e {
             case .started: bargeDeadline = Date().addingTimeInterval(4)
-            case .utterance(let samples): bargeListening = false; ask(samples: samples)   // Ескі жауап тасталады
+            case .utterance(let samples, _): bargeListening = false; ask(samples: samples)   // Ескі жауап тасталады
             default: break
             }
             return
         }
         if audio.isPlaying {
-            if case .utterance(let samples) = e { checkBarge(samples) }
+            if case .utterance(let samples, let speech) = e, speech { checkBarge(samples) }
             return
         }
         switch (mode, e) {
@@ -264,7 +264,7 @@ final class Assistant: ObservableObject {
             sendEarly(samples)
         case (.talk, .resumed):
             earlyId = nil   // Сөз жалғасты: алдын ала танығанды ұмыт
-        case (.talk, .utterance(let samples)):
+        case (.talk, .utterance(let samples, _)):
             // Жауап күтіп тұрғанда 0,5 с-тан қысқа дыбыс ескі сұрақты бұзбасын
             if orb == .think, talkTask != nil, Double(samples.count) / VAD.rate < 0.5 { return }
             let id = earlyId
@@ -278,8 +278,9 @@ final class Assistant: ObservableObject {
             }
         case (.wake, .resumed):
             wakeEarlyChecked = false
-        case (.wake, .utterance(let samples)):
+        case (.wake, .utterance(let samples, let speech)):
             if wakeEarlyChecked { wakeEarlyChecked = false; return }   // Бұл бөлік тексерілді
+            guard speech else { return }   // Шу не музыка: серверге жібермейміз
             confirmWake(samples)
         default:
             break

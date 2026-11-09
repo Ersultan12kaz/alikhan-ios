@@ -33,13 +33,14 @@ final class VAD {
     private var segmentHits = 0            // Осы сөйлем бойы танығыш неше рет «сөз» деді
     private var lastCounted: TimeInterval = 0
     /// Сөйлем әзірге сөз бе (алдын ала жіберу үшін)
-    var segmentIsSpeech: Bool { !useClassifier || segmentHits >= 2 }
+    var segmentIsSpeech: Bool { !useClassifier || segmentHits >= 1 }
+    private var history: [Float] = []      // Соңғы 3 с кадр деңгейлері (бөлме шуын есептеу үшін)
 
     enum Event {
         case started
         case early([Float])        // 0,2 с үнсіздік: /stt/early
         case resumed               // Сөз жалғасты: алдын ала тануды ұмыт
-        case utterance([Float])    // 0,8 с үнсіздік не шекке жетті
+        case utterance([Float], speech: Bool)   // 0,8 с үнсіздік не шекке жетті; speech: танығыш «сөз» деді ме
     }
 
     var speaking: Bool { inSpeech }
@@ -61,9 +62,18 @@ final class VAD {
     }
 
     /// Бөлме шуы сөз жоқ кезде: көтерілсе баяу (×0,05), түссе тез (×0,2). Тұрақты шек жоқ.
-    private func updateNoise(_ rms: Float) {
-        noise += (rms - noise) * (rms > noise ? 0.05 : 0.2)
-        noise = max(noise, 3e-4)   // −70 dB: микрофон тыныш болса, кішкене тербеліс «сөз» болып саналмасын
+    /// Бөлме шуы: соңғы 3 с-тағы ең тыныш 15% кадр. Алғашқы 0,3 с өлшеніп, сосын оған жақындайды:
+    /// көтерілсе баяу (×0,05), түссе тез (×0,2). Сөз ішінде де жаңарады: бұрын «қатты» кезде тоқтап қалатын да,
+    /// шуы бар бөлмеде сөйлем 4,5 с-қа созылып, «Алихан» кеш естілетін (ноутбуктағы симуляцияда тексерілді).
+    private func updateNoise(_ rms: Float) -> Bool {
+        history.append(rms)
+        if history.count > 100 { history.removeFirst() }
+        guard history.count >= 10 else { return false }      // алғашқы 0,3 с: тек өлшейміз
+        let sorted = history.sorted()
+        let target = max(sorted[Int(Double(sorted.count - 1) * 0.15)], 3e-4)   // −70 dB-ден төмен емес
+        if history.count == 10 { noise = target }
+        noise += (target - noise) * (target > noise ? 0.05 : 0.2)
+        return true
     }
 
     func push(_ f: [Float]) -> Event? {
@@ -75,9 +85,9 @@ final class VAD {
         // Сөз = (танығыш «сөз» ≥ 0,5) ЖӘНЕ (бөлме шуынан ≥ 1,65 есе қатты). Ақырын әрі анық сөз де өтеді.
         // Танығыш 0,5 с кешігеді: әр кадрда күтсек, қысқа «Алихан» (0,6 с) мүлде ұсталмайды.
         // Сондықтан сөз басы деңгеймен ұсталады, ал танығыш шешімі сөйлем біткенде бүкіл сөйлем бойынша тексеріледі.
+        guard updateNoise(rms) else { return nil }
         let loud = smooth > noise * ratio
-        if !inSpeech && !loud { updateNoise(rms) }
-        // Танығыштың әр жаңа нәтижесін бір рет санаймыз: кемінде 2 рет «сөз» болса ғана сөйлем
+        // Танығыштың әр жаңа нәтижесін бір рет санаймыз: сөйлем бойы кемінде бір рет «сөз» болса ғана сөйлем
         if inSpeech, speechAt > lastCounted {
             lastCounted = speechAt
             if speechProb >= 0.5 { segmentHits += 1 }
@@ -113,10 +123,11 @@ final class VAD {
         let length = Double(buffer.count) / VAD.rate
         if silence >= endSilence || length >= maxLength {
             let out = buffer
-            let heardSpeech = !useClassifier || segmentHits >= 2
+            let heardSpeech = !useClassifier || segmentHits >= 1
             reset()
-            // Танығыш бүкіл сөйлем бойы бірде-бір рет «сөз» демесе: шу не музыка, серверге жібермейміз
-            return heardSpeech ? .utterance(out) : nil
+            // Танығыш бүкіл сөйлем бойы бірде-бір рет «сөз» демесе: шу не музыка.
+            // Оятуда ондайды серверге жібермейміз, ал сөйлесуде қысқа «иә», «жоқ» жоғалмасын деп бәрібір жібереміз.
+            return .utterance(out, speech: heardSpeech)
         }
         if !earlySent, silence >= earlyPause, length >= 0.4 {
             earlySent = true
