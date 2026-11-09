@@ -43,13 +43,13 @@ final class Settings: ObservableObject {
     @Published var nearRatio: Double { didSet { d.set(nearRatio, forKey: "nearRatio") } }
     @Published var pip: Bool { didSet { d.set(pip, forKey: "pip") } }
     @Published var endSilence: Double { didSet { d.set(endSilence, forKey: "endSilence") } }       // Сөздің соңы: 0,8 с
-    @Published var voiceProcessing: Bool { didSet { d.set(voiceProcessing, forKey: "voiceProcessing4") } }
+    @Published var voiceProcessing: Bool { didSet { d.set(voiceProcessing, forKey: "voiceProcessing5") } }
     @Published var configured: Bool { didSet { d.set(configured, forKey: "configured") } }
 
     private init() {
         d.register(defaults: ["server": Settings.defaultServer, "alwaysListen": true, "headsetMic": false,
                               "nearRatio": 1.65, "pip": false, "configured": false,
-                              "endSilence": 0.8, "voiceProcessing4": false])
+                              "endSilence": 0.8, "voiceProcessing5": true])
         server = d.string(forKey: "server") ?? Settings.defaultServer
         token = Keychain.get("token") ?? ""
         alwaysListen = d.bool(forKey: "alwaysListen")
@@ -57,7 +57,7 @@ final class Settings: ObservableObject {
         nearRatio = d.double(forKey: "nearRatio")
         pip = d.bool(forKey: "pip")
         endSilence = d.double(forKey: "endSilence")
-        voiceProcessing = d.bool(forKey: "voiceProcessing4")   // Әдепкіде өшірулі: iOS оны «сөйлесу» режимі деп, дыбысты ақырындатады
+        voiceProcessing = d.bool(forKey: "voiceProcessing5")   // Промт бойынша қосулы: жауап сол қозғалтқыш арқылы ойнайды, бәсеңдемейді
         configured = d.bool(forKey: "configured")
     }
 
