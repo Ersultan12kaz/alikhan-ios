@@ -426,12 +426,19 @@ final class Assistant: ObservableObject {
         // «Сөйлеу» алғашқы дыбыс шыққан сәтте
         audio.onFirstAudio = { [weak self] in self?.setOrb(.speak) }
         if let s = r.audio_url, !s.isEmpty, let url = URL(string: s) {
-            await audio.play(url: url)              // Ағынмен: толық жүктелуін күтпейді
+            await audio.play(url: url)              // Сервер синтезді бірден бастайды, біз бірден жүктейміз
         } else if let b64 = r.audio, !b64.isEmpty, let data = Data(base64Encoded: b64, options: .ignoreUnknownCharacters) {
             await audio.play(data)
         }
+        let played = audio.onFirstAudio == nil
         audio.onFirstAudio = nil
         guard my == gen else { return }
+        // Дыбыс келмеді: мәтінді /speak арқылы айтамыз, үнсіз қалмаймыз
+        if !played, let t = r.text, !t.isEmpty {
+            setOrb(.speak)
+            await say(t)
+            guard my == gen else { return }
+        }
         if r.end == true {
             _ = await action.value
             endTalk()   // «Рахмет, бара бер», «болды», «сау бол»: «Жарайды» ойнап болды

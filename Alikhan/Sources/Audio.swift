@@ -161,6 +161,7 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
     private var player: AVAudioPlayer?
     private var streamPlayer: AVPlayer?
     private var streamObservers: [NSObjectProtocol] = []
+    private var streamStarted = false
     private var statusObservation: NSKeyValueObservation?
     private let synth = AVSpeechSynthesizer()
     private var finishPlayback: (() -> Void)?
@@ -204,6 +205,16 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
         }
         try s.setActive(true)
         choosePreferredInput()
+    }
+
+    /// Voice Processing iOS-ты «сөйлесу» режиміне ауыстырады: дыбыс құлақ тұсындағы динамикке кетеді.
+    /// Наушник жоқ болса, үлкен динамикке бағыттаймыз.
+    private func forceSpeakerIfNeeded() {
+        let s = AVAudioSession.sharedInstance()
+        let outs = s.currentRoute.outputs.map(\.portType)
+        if outs.contains(.builtInReceiver) || (voiceProcessing && !outs.contains(where: { [.headphones, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE, .airPlay, .carAudio].contains($0) })) {
+            try? s.overrideOutputAudioPort(.speaker)
+        }
     }
 
     private func choosePreferredInput() {
@@ -256,6 +267,7 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
         engine.prepare()
         try engine.start()
         startedAt = Date()
+        forceSpeakerIfNeeded()
         NotificationCenter.default.addObserver(self, selector: #selector(configChanged), name: .AVAudioEngineConfigurationChange, object: engine)
     }
 
@@ -333,6 +345,7 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
     /// Толық mp3 (base64 `audio`) не wav
     func play(_ data: Data, completion: @escaping () -> Void) {
         beginPlayback(completion)
+        forceSpeakerIfNeeded()
         guard let p = try? AVAudioPlayer(data: data) else { done(); return }
         player = p
         p.delegate = self
@@ -345,28 +358,14 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
         }
     }
 
-    /// Ағынмен ойнату (`audio_url`): толық жүктелуін күтпейді
+    /// `audio_url`: сілтеме бір рет жарамды, сондықтан бір сұраныспен толық жүктеп, AVAudioPlayer-мен ойнатамыз.
+    /// (AVPlayer сілтемені бірнеше рет сұрайды: екіншісінде сервер бермей, дыбыс мүлде шықпай қалуы мүмкін.)
     func play(url: URL) async {
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            beginPlayback { c.resume() }
-            let item = AVPlayerItem(url: url)
-            let p = AVPlayer(playerItem: item)
-            p.automaticallyWaitsToMinimizeStalling = false
-            streamPlayer = p
-            let nc = NotificationCenter.default
-            streamObservers = [
-                nc.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in self?.streamEnded(p) },
-                nc.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main) { [weak self] _ in self?.streamEnded(p) },
-            ]
-            statusObservation = p.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
-                DispatchQueue.main.async {
-                    guard let self, player === self.streamPlayer else { return }
-                    if player.timeControlStatus == .playing { self.firstAudio() }
-                    if player.currentItem?.status == .failed { self.streamEnded(player) }
-                }
-            }
-            p.play()
-        }
+        var r = URLRequest(url: url)
+        r.timeoutInterval = 15
+        guard let (data, resp) = try? await URLSession.shared.data(for: r),
+              ((resp as? HTTPURLResponse)?.statusCode ?? 200) < 300, data.count > 200, !Task.isCancelled else { return }
+        await play(data)
     }
 
     private func streamEnded(_ p: AVPlayer) {
