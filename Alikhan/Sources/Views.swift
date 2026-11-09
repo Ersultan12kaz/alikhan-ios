@@ -257,6 +257,18 @@ struct SettingsView: View {
                         Slider(value: $settings.nearRatio, in: 1.2...3.0, step: 0.05)
                     }
                     LabeledContent("Соңғы сағатта /wake/confirm", value: "\(a.wakeSendsLastHour) рет")
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Микрофон: \(Int(a.micLevelDB)) dB")
+                            Spacer()
+                            Text("сөз: \(Int(a.speechConfidence * 100))%")
+                                .foregroundStyle(a.speechConfidence >= 0.5 ? Color.green : Color.secondary)
+                        }
+                        .font(.footnote.monospacedDigit())
+                        // −70 dB … −10 dB шкаласы: ақырын сөйлегенде де жолақ қозғалса, сөз ұсталып жатыр
+                        ProgressView(value: Double(min(max((a.micLevelDB + 70) / 60, 0), 1)))
+                            .tint(a.speechConfidence >= 0.5 ? .green : .blue)
+                    }
                 } header: { Text("Тыңдау") } footer: {
                     Text("Наушник микрофоны өшірулі болса, телефонның өз микрофоны тыңдайды, ал музыка наушникке жоғары сапада шығады. Қосулы болса, AirPods сөйлесу режиміне ауысады да, музыка сапасы төмендейді.")
                 }

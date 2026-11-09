@@ -37,6 +37,8 @@ final class Assistant: ObservableObject {
     @Published var capture: CaptureRequest?
     @Published var status = ""
     @Published private(set) var wakeSendsLastHour = 0
+    @Published private(set) var micLevelDB: Float = -90      // Баптау бетінде: микрофон деңгейі
+    @Published private(set) var speechConfidence: Float = 0  // «Бұл адам сөзі» сенімділігі
 
     let settings = Settings.shared
     let audio = AudioIO()
@@ -78,6 +80,10 @@ final class Assistant: ObservableObject {
         audio.onEvent = { [weak self] e in self?.handle(e) }
         audio.onInterrupted = { [weak self] in self?.interrupted = true }
         audio.onResume = { [weak self] in self?.resumeAudio() }
+        audio.onLevel = { [weak self] db, p in
+            self?.micLevelDB = db
+            self?.speechConfidence = p
+        }
         Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -704,7 +710,13 @@ final class Assistant: ObservableObject {
             let before = orb
             said = text
             setOrb(.speak)
-            await say(text)
+            // WhatsApp т.б.: дауыс дайын келсе (audio_url), /speak-ті шақырмай бірден ойнатамыз
+            if let s = notice.audio_url, !s.isEmpty, let url = URL(string: s) {
+                audio.onFirstAudio = nil
+                await audio.play(url: url)
+            } else {
+                await say(text)
+            }
             speakingNotice = false
             if notice.kind == "question", mode != .talk || orb != .think {
                 // Сұрақ тек дауыспен: жауабын 8 секунд тыңдаймыз, ол /phone-ға кетеді

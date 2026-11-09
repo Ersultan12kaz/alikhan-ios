@@ -1,9 +1,11 @@
 import AudioToolbox
 import AVFoundation
+import SoundAnalysis
 
 /// Сөз анықтау (ноутбуктағы сандармен).
-/// Бөлме шуы: соңғы 5 секундтағы ең тыныш 15% кадр, алғашқы 0,3 секундта өлшеніп, үнемі жаңарады.
-/// Сөз деп тек шудан `ratio` (1,65) есе қатты дауыс саналады. 0,2 с үнсіздікте алдын ала тану, 0,8 с үнсіздікте сөйлем бітті.
+/// Сөз = Apple SoundAnalysis «speech» ≥ 0,5 ЖӘНЕ дыбыс бөлме шуынан ≥ 1,65 есе қатты. Абсолютті қаттылық шегі жоқ:
+/// ақырын әрі анық сөз де ұсталады, ал теледидар мен шу (танығыш «сөз емес» десе) оятпайды.
+/// 0,2 с үнсіздікте алдын ала тану, 0,8 с үнсіздікте сөйлем бітті.
 final class VAD {
     static let rate = 16000.0
     static let frame = 480                 // 30 мс
@@ -13,12 +15,15 @@ final class VAD {
     var minSpeech = 0.4                    // жауаптан кейін 0,15 с: қысқа «иә», «жоқ»
     var endSilence = 0.8
     let earlyPause = 0.2
-    let preRoll = 0.3
-    private let floorRMS: Float = 0.002    // Тым тыныш бөлмеде де бір шек болсын
+    let preRoll = 0.6                      // Танығыш 0,25–0,5 с кешігеді: сөз басы кесілмесін
 
-    private(set) var noise: Float = 0.003
+    private(set) var noise: Float = 0.001  // Бөлме шуы: сөз жоқ кезде үнемі жаңарады
     private var smooth: Float = 0
-    private var history: [Float] = []      // Соңғы 5 с кадр деңгейлері
+    private(set) var level: Float = 0      // Соңғы кадр деңгейі (экранда көрсету үшін)
+    // SoundAnalysis: «бұл адам сөзі ме?» (ноутбуктағы Silero VAD орнына)
+    var useClassifier = false
+    private(set) var speechProb: Float = 0
+    private var speechAt: TimeInterval = 0
     private var pre: [[Float]] = []
     private var buffer: [Float] = []
     private var inSpeech = false
@@ -44,13 +49,16 @@ final class VAD {
         earlySent = false
     }
 
+    /// Танығыштың соңғы нәтижесі (0,25 с сайын келеді)
+    func setSpeech(_ p: Float) {
+        speechProb = p
+        speechAt = ProcessInfo.processInfo.systemUptime
+    }
+
+    /// Бөлме шуы сөз жоқ кезде: көтерілсе баяу (×0,05), түссе тез (×0,2). Тұрақты шек жоқ.
     private func updateNoise(_ rms: Float) {
-        history.append(rms)
-        if history.count > 167 { history.removeFirst() }
-        // Алғашқы 0,3 с (10 кадр) өлшеген соң, әр 5 кадрда жаңарады
-        guard history.count >= 10, history.count == 10 || history.count % 5 == 0 else { return }
-        let sorted = history.sorted()
-        noise = max(sorted[Int(Double(sorted.count - 1) * 0.15)], 0.0005)
+        noise += (rms - noise) * (rms > noise ? 0.05 : 0.2)
+        noise = max(noise, 1e-6)
     }
 
     func push(_ f: [Float]) -> Event? {
@@ -58,8 +66,11 @@ final class VAD {
         for x in f { sum += x * x }
         let rms = (sum / Float(f.count)).squareRoot()
         smooth = smooth * 0.5 + rms * 0.5      // Бір кадрлық тықыр сөз болып саналмасын
-        updateNoise(rms)
-        let loud = smooth > max(noise * ratio, floorRMS)
+        level = smooth
+        // Сөз = (танығыш «сөз» ≥ 0,5) ЖӘНЕ (бөлме шуынан ≥ 1,65 есе қатты). Ақырын әрі анық сөз де өтеді.
+        let isSpeech = !useClassifier || (ProcessInfo.processInfo.systemUptime - speechAt < 0.8 && speechProb >= 0.5)
+        let loud = smooth > noise * ratio && isSpeech
+        if !inSpeech && !loud { updateNoise(rms) }
 
         if !inSpeech {
             pre.append(f)
@@ -228,6 +239,15 @@ final class MP3Stream {
 }
 
 
+/// SoundAnalysis нәтижесі: `speech` класының сенімділігі
+final class SpeechObserver: NSObject, SNResultsObserving {
+    var onSpeech: ((Float) -> Void)?
+    func request(_ request: SNRequest, didProduce result: SNResult) {
+        guard let r = result as? SNClassificationResult else { return }
+        onSpeech?(Float(r.classification(forIdentifier: "speech")?.confidence ?? 0))
+    }
+}
+
 /// Микрофон мен динамик. Жауап микрофонмен бір AVAudioEngine арқылы ойнайды (AVAudioPlayerNode):
 /// Voice Processing оны бәсеңдетпейді әрі микрофоннан Алиханның өз дауысын алып тастайды.
 /// Декодтау сәтсіз болса, жиналған файл AVAudioPlayer-мен ойнайды. Барлық сыртқы шақыру негізгі ағында.
@@ -237,6 +257,13 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
     var onInterrupted: (() -> Void)?
     var onResume: (() -> Void)?
     var onFirstAudio: (() -> Void)?      // Алғашқы дыбыс шыққан сәт: «сөйлеу» күйі
+    var onLevel: ((Float, Float) -> Void)?   // Микрофон деңгейі (dB) және «сөз» сенімділігі: баптау бетінде
+
+    private var analyzer: SNAudioStreamAnalyzer?
+    private let speechObserver = SpeechObserver()
+    private let analysisQueue = DispatchQueue(label: "kz.ersultan.alikhan.analysis")
+    private var analysisPos: AVAudioFramePosition = 0
+    private var levelFrames = 0
 
     private var engine = AVAudioEngine()
     private let queue = DispatchQueue(label: "kz.ersultan.alikhan.audio")
@@ -293,10 +320,12 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
         // mixWithOthers: Яндекс Музыка тоқтамайды. A2DP: наушникке жоғары сапа. HFP тек «Наушник микрофоны» қосулы болса.
         var options: AVAudioSession.CategoryOptions = [.mixWithOthers, .defaultToSpeaker, .allowBluetoothA2DP]
         if headsetMic { options.insert(.allowBluetooth) }
-        if s.category != .playAndRecord || s.categoryOptions != options {
-            try s.setCategory(.playAndRecord, mode: .default, options: options)
+        // .voiceChat: дыбыс деңгейін өзі көтереді, шуды басады, жаңғырықты кетіреді (.measurement-ті қолданбаймыз)
+        if s.category != .playAndRecord || s.mode != .voiceChat || s.categoryOptions != options {
+            try s.setCategory(.playAndRecord, mode: .voiceChat, options: options)
         }
         try s.setActive(true)
+        if s.isInputGainSettable { try? s.setInputGain(1.0) }
         choosePreferredInput()
     }
 
@@ -355,17 +384,59 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw APIError.status(-1) }
         converter = AVAudioConverter(from: format, to: target)
+        setupAnalyzer()
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buf, _ in
             guard let self else { return }
             let samples = self.convert(buf)    // Буфер қайта қолданылады: бірден көшіреміз
             self.queue.async { self.process(samples) }
+            self.analyze(samples)
         }
         engine.prepare()
         try engine.start()
         startedAt = Date()
         forceSpeakerIfNeeded()
         NotificationCenter.default.addObserver(self, selector: #selector(configChanged), name: .AVAudioEngineConfigurationChange, object: engine)
+    }
+
+    /// Apple SoundAnalysis: құрылғының өзінде, интернетсіз. 0,5 с терезе, 0,25 с сайын нәтиже.
+    private func setupAnalyzer() {
+        let a = SNAudioStreamAnalyzer(format: target)
+        do {
+            let req = try SNClassifySoundRequest(classifierIdentifier: .version1)
+            let want = CMTime(seconds: 0.5, preferredTimescale: 16000)
+            let c = req.windowDurationConstraint
+            if c.type == .enumerated {
+                let list = c.enumeratedDurations.map(\.timeValue)
+                if let best = list.min(by: { abs($0.seconds - 0.5) < abs($1.seconds - 0.5) }) { req.windowDuration = best }
+            } else if c.type == .range, c.durationRange.containsTime(want) {
+                req.windowDuration = want
+            }
+            req.overlapFactor = 0.5
+            speechObserver.onSpeech = { [weak self] p in
+                guard let self else { return }
+                self.queue.async { self.vad.setSpeech(p) }
+            }
+            try a.add(req, withObserver: speechObserver)
+            analyzer = a
+            analysisPos = 0
+            queue.async { self.vad.useClassifier = true }
+        } catch {
+            analyzer = nil
+            queue.async { self.vad.useClassifier = false }   // Танығыш жоқ болса: тек энергия
+        }
+    }
+
+    private func analyze(_ samples: [Float]) {
+        guard !samples.isEmpty, let a = analyzer else { return }
+        analysisQueue.async {
+            guard let buf = AVAudioPCMBuffer(pcmFormat: self.target, frameCapacity: AVAudioFrameCount(samples.count)),
+                  let ch = buf.floatChannelData else { return }
+            buf.frameLength = AVAudioFrameCount(samples.count)
+            samples.withUnsafeBufferPointer { ch[0].update(from: $0.baseAddress!, count: samples.count) }
+            a.analyze(buf, atAudioFramePosition: self.analysisPos)
+            self.analysisPos += AVAudioFramePosition(samples.count)
+        }
     }
 
     func stop() {
@@ -417,6 +488,12 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
             }
             if let event = vad.push(frame) {
                 DispatchQueue.main.async { self.onEvent?(event) }
+            }
+            levelFrames += 1
+            if levelFrames % 4 == 0 {   // ~8 рет/с: баптау бетіндегі деңгей
+                let db = 20 * log10(max(vad.level, 1e-6))
+                let p = vad.useClassifier ? vad.speechProb : 1
+                DispatchQueue.main.async { self.onLevel?(db, p) }
             }
         }
     }
