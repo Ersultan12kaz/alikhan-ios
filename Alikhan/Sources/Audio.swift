@@ -58,7 +58,7 @@ final class VAD {
     /// Бөлме шуы сөз жоқ кезде: көтерілсе баяу (×0,05), түссе тез (×0,2). Тұрақты шек жоқ.
     private func updateNoise(_ rms: Float) {
         noise += (rms - noise) * (rms > noise ? 0.05 : 0.2)
-        noise = max(noise, 1e-6)
+        noise = max(noise, 3e-4)   // −70 dB: микрофон тыныш болса, кішкене тербеліс «сөз» болып саналмасын
     }
 
     func push(_ f: [Float]) -> Event? {
@@ -318,6 +318,15 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
     }
     private var normalMax = 15.0
 
+    /// Баптау бетіне: қай микрофон, жиілігі, Voice Processing
+    var diagnostics: String {
+        let s = AVAudioSession.sharedInstance()
+        let mic = s.currentRoute.inputs.first?.portName ?? "жоқ"
+        let out = s.currentRoute.outputs.first?.portName ?? "жоқ"
+        let rate = engine.isRunning ? Int(engine.inputNode.outputFormat(forBus: 0).sampleRate) : 0
+        return "Кіріс: \(mic) · \(rate) Гц · VP \(voiceProcessing ? "қосулы" : "өшік")\nШығыс: \(out) · күшейткіш \(Int(s.inputGain * 100))%"
+    }
+
     private(set) var isPlaying = false
     private(set) var isPaused = false
     var isRunning: Bool { engine.isRunning }
@@ -339,9 +348,10 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
         // mixWithOthers: Яндекс Музыка тоқтамайды. A2DP: наушникке жоғары сапа. HFP тек «Наушник микрофоны» қосулы болса.
         var options: AVAudioSession.CategoryOptions = [.mixWithOthers, .defaultToSpeaker, .allowBluetoothA2DP]
         if headsetMic { options.insert(.allowBluetooth) }
-        // .voiceChat: дыбыс деңгейін өзі көтереді, шуды басады, жаңғырықты кетіреді (.measurement-ті қолданбаймыз)
-        if s.category != .playAndRecord || s.mode != .voiceChat || s.categoryOptions != options {
-            try s.setCategory(.playAndRecord, mode: .voiceChat, options: options)
+        // .default: телефонда тексерілген тұрақты режим. .voiceChat + Voice Processing + mixWithOthers бірге
+        // микрофоннан тыныштық беріп (−90 dB), сөз мүлде естілмей қалды.
+        if s.category != .playAndRecord || s.mode != .default || s.categoryOptions != options {
+            try s.setCategory(.playAndRecord, mode: .default, options: options)
         }
         try s.setActive(true)
         if s.isInputGainSettable { try? s.setInputGain(1.0) }
@@ -405,7 +415,6 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
         converter = AVAudioConverter(from: format, to: target)
         // 48 → 16 кГц: ең жоғары сапамен (сөз танудың дәлдігі үшін)
         converter?.sampleRateConverterQuality = AVAudioQuality.max.rawValue
-        converter?.sampleRateConverterAlgorithm = AVSampleRateConverterAlgorithm_Mastering
         setupAnalyzer()
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buf, _ in

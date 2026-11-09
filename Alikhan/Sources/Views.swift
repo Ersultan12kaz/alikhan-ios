@@ -247,7 +247,7 @@ struct SettingsView: View {
                     Toggle("Үнемі тыңдау («Алихан» сөзін күту)", isOn: $settings.alwaysListen)
                     Toggle("Наушник микрофоны", isOn: $settings.headsetMic)
                     Toggle("Picture-in-Picture айдаһар", isOn: $settings.pip)
-                    Toggle("Шу басу (Voice Processing)", isOn: $settings.voiceProcessing)
+                    Toggle("Шу басу (Voice Processing, сынақ)", isOn: $settings.voiceProcessing)
                     VStack(alignment: .leading) {
                         Text("Сөз соңы: \(settings.endSilence, specifier: "%.1f") с үнсіздік")
                         Slider(value: $settings.endSilence, in: 0.5...1.5, step: 0.1)
@@ -268,6 +268,7 @@ struct SettingsView: View {
                         // −70 dB … −10 dB шкаласы: ақырын сөйлегенде де жолақ қозғалса, сөз ұсталып жатыр
                         ProgressView(value: Double(min(max((a.micLevelDB + 70) / 60, 0), 1)))
                             .tint(a.speechConfidence >= 0.5 ? .green : .blue)
+                        Text(a.audio.diagnostics).font(.caption2).foregroundStyle(.secondary)
                     }
                 } header: { Text("Тыңдау") } footer: {
                     Text("Наушник микрофоны өшірулі болса, телефонның өз микрофоны тыңдайды, ал музыка наушникке жоғары сапада шығады. Қосулы болса, AirPods сөйлесу режиміне ауысады да, музыка сапасы төмендейді.")
