@@ -245,7 +245,9 @@ final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelega
     private var pending: [Float] = []
     private let synth = AVSpeechSynthesizer()
     private var headsetMic = false
+    private var wantVoiceProcessing = true
     private(set) var voiceProcessing = false
+    private var startedAt = Date.distantPast   // Өзіміз қосқан сәт: сол кездегі «баптау өзгерді» хабарын елемейміз
 
     // Ойнату күйі
     private var finishPlayback: (() -> Void)?
@@ -294,17 +296,18 @@ final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelega
     private func choosePreferredInput() {
         let s = AVAudioSession.sharedInstance()
         let inputs = s.availableInputs ?? []
-        if headsetMic, let bt = inputs.first(where: { $0.portType == .bluetoothHFP }) {
-            try? s.setPreferredInput(bt)
-        } else if let mic = inputs.first(where: { $0.portType == .builtInMic }) {
-            try? s.setPreferredInput(mic)
-        }
+        let want = headsetMic ? inputs.first(where: { $0.portType == .bluetoothHFP }) ?? inputs.first(where: { $0.portType == .builtInMic })
+                              : inputs.first(where: { $0.portType == .builtInMic })
+        // Қазір де сол болса, қайта қоймаймыз (әр қою жаңа өзгеріс хабарын туғызады)
+        guard let want, s.preferredInput?.uid != want.uid else { return }
+        try? s.setPreferredInput(want)
     }
 
     // MARK: Микрофон
 
     func start(headsetMic: Bool, voiceProcessing wantVP: Bool) throws {
         if engine.isRunning { return }
+        wantVoiceProcessing = wantVP
         try configureSession(headsetMic: headsetMic)
         do {
             try startEngine(voiceProcessing: wantVP)
@@ -340,6 +343,7 @@ final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelega
         }
         engine.prepare()
         try engine.start()
+        startedAt = Date()
         NotificationCenter.default.addObserver(self, selector: #selector(configChanged), name: .AVAudioEngineConfigurationChange, object: engine)
     }
 
@@ -409,7 +413,7 @@ final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelega
 
     private func ensureEngineForPlayback() {
         if engine.isRunning { return }
-        try? start(headsetMic: headsetMic, voiceProcessing: true)
+        try? start(headsetMic: headsetMic, voiceProcessing: wantVoiceProcessing)
     }
 
     private func connect(_ format: AVAudioFormat) {
@@ -605,11 +609,19 @@ final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelega
     }
 
     @objc private func configChanged() {
-        // Наушник қосылды/ажыратылды: формат өзгерді, қайта бастаймыз
-        DispatchQueue.main.async { self.onResume?() }
+        // Наушник қосылды/ажыратылды: формат өзгерді. Бірақ Voice Processing-ті өзіміз қосқанда да бұл хабар келеді:
+        // соны естіп қайта қоссақ, шексіз қайталанып, микрофон өшіп-жанып, дыбыс бірде азайып, бірде қосылып тұрады.
+        DispatchQueue.main.async {
+            guard Date().timeIntervalSince(self.startedAt) > 2, !self.engine.isRunning else { return }
+            self.onResume?()
+        }
     }
 
     @objc private func routeChanged(_ n: Notification) {
+        // Тек құрылғы шынымен қосылғанда/ажыратылғанда: әйтпесе өз баптауымыз жаңа хабар туғызады
+        guard let raw = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: raw),
+              reason == .newDeviceAvailable || reason == .oldDeviceUnavailable else { return }
         DispatchQueue.main.async { self.choosePreferredInput() }
     }
 }

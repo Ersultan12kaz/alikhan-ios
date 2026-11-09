@@ -295,9 +295,26 @@ final class Assistant: ObservableObject {
     /// Қоңырау, Siri не басқа қосымша микрофонды алса: біткен соң өзі қайта қосылады.
     private func resumeAudio() {
         guard mode != .off else { return }
+        // Микрофон жұмыс істеп тұрса, тиіспейміз
+        if audio.isRunning {
+            if orb == .error { setOrb(mode == .wake ? .sleep : .listen) }
+            return
+        }
+        // Қайта қосу 2 секундта бір реттен жиі болмасын. 20 секундта 3 рет болса, Voice Processing кінәлі: өшіреміз.
+        let now = Date()
+        restarts = restarts.filter { now.timeIntervalSince($0) < 20 }
+        if let last = restarts.last, now.timeIntervalSince(last) < 2 { return }
+        restarts.append(now)
+        if restarts.count >= 3, settings.voiceProcessing {
+            settings.voiceProcessing = false
+            status = "Шу басу өшірілді: микрофон тұрақсыз болды"
+            restarts.removeAll()
+        }
         audio.stop()
         if ensureAudio(maxLength: mode == .wake ? 4.5 : 15), orb == .error { setOrb(mode == .wake ? .sleep : .listen) }
     }
+
+    private var restarts: [Date] = []
 
     private func watchdog() {
         if mode != .off && !audio.isRunning { resumeAudio() }
