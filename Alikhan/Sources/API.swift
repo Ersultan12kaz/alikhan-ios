@@ -56,9 +56,8 @@ struct Notice: Decodable {
     var remote_browser_url: String?
     var capture: CaptureInfo?
     var task_id: String?
-    var audio_url: String?     // Бір реттік ағынды mp3: /speak-ті шақырмай, бірден ойнатамыз
 
-    enum CodingKeys: String, CodingKey { case id, voice_text, kind, ask_id, title, question, url, remote_browser_url, capture, task_id, audio_url }
+    enum CodingKeys: String, CodingKey { case id, voice_text, kind, ask_id, title, question, url, remote_browser_url, capture, task_id }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -72,7 +71,6 @@ struct Notice: Decodable {
         remote_browser_url = try? c.decodeIfPresent(String.self, forKey: .remote_browser_url)
         capture = try? c.decodeIfPresent(CaptureInfo.self, forKey: .capture)
         task_id = c.flexibleString(.task_id)
-        audio_url = try? c.decodeIfPresent(String.self, forKey: .audio_url)
     }
 
     private init(text: String) { voice_text = text; kind = "message" }
