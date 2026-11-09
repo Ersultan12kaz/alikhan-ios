@@ -382,9 +382,9 @@ final class Assistant: ObservableObject {
     // MARK: «Алихан»
 
     private func confirmWake(_ samples: [Float]) {
-        // Бір сөйлемді бөлшектеп қайта-қайта жібермейміз: 1,5 с-та бір реттен жиі емес
+        // Бір сөйлемді бөлшектеп қайта-қайта жібермейміз: 1 с-та бір реттен жиі емес (екі сөйлем арасы бәрібір ≥ 1,2 с)
         let now = Date()
-        guard now.timeIntervalSince(lastWakeSend) >= 1.5 else { return }
+        guard now.timeIntervalSince(lastWakeSend) >= 1.0 else { return }
         lastWakeSend = now
         WakeCounter.add()
         wakeSendsLastHour = WakeCounter.lastHour
