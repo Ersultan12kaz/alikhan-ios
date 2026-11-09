@@ -30,6 +30,7 @@ final class VAD {
     private var voicedRun = 0
     private var silenceFrames = 0
     private var earlySent = false
+    private var segmentProb: Float = 0     // Осы сөйлем бойы танығыштың ең жоғары «сөз» сенімділігі
 
     enum Event {
         case started
@@ -47,6 +48,7 @@ final class VAD {
         voicedRun = 0
         silenceFrames = 0
         earlySent = false
+        segmentProb = 0
     }
 
     /// Танығыштың соңғы нәтижесі (0,25 с сайын келеді)
@@ -68,9 +70,11 @@ final class VAD {
         smooth = smooth * 0.5 + rms * 0.5      // Бір кадрлық тықыр сөз болып саналмасын
         level = smooth
         // Сөз = (танығыш «сөз» ≥ 0,5) ЖӘНЕ (бөлме шуынан ≥ 1,65 есе қатты). Ақырын әрі анық сөз де өтеді.
-        let isSpeech = !useClassifier || (ProcessInfo.processInfo.systemUptime - speechAt < 0.8 && speechProb >= 0.5)
-        let loud = smooth > noise * ratio && isSpeech
+        // Танығыш 0,5 с кешігеді: әр кадрда күтсек, қысқа «Алихан» (0,6 с) мүлде ұсталмайды.
+        // Сондықтан сөз басы деңгеймен ұсталады, ал танығыш шешімі сөйлем біткенде бүкіл сөйлем бойынша тексеріледі.
+        let loud = smooth > noise * ratio
         if !inSpeech && !loud { updateNoise(rms) }
+        if inSpeech, ProcessInfo.processInfo.systemUptime - speechAt < 0.8 { segmentProb = max(segmentProb, speechProb) }
 
         if !inSpeech {
             pre.append(f)
@@ -78,6 +82,7 @@ final class VAD {
             voicedRun = loud ? voicedRun + 1 : 0
             if Double(voicedRun) * frameS >= minSpeech {
                 inSpeech = true
+                segmentProb = ProcessInfo.processInfo.systemUptime - speechAt < 0.8 ? speechProb : 0
                 buffer = pre.flatMap { $0 }
                 pre.removeAll()
                 silenceFrames = 0
@@ -100,8 +105,10 @@ final class VAD {
         let length = Double(buffer.count) / VAD.rate
         if silence >= endSilence || length >= maxLength {
             let out = buffer
+            let heardSpeech = !useClassifier || segmentProb >= 0.5
             reset()
-            return .utterance(out)
+            // Танығыш бүкіл сөйлем бойы бірде-бір рет «сөз» демесе: шу не музыка, серверге жібермейміз
+            return heardSpeech ? .utterance(out) : nil
         }
         if !earlySent, silence >= earlyPause, length >= 0.4 {
             earlySent = true
