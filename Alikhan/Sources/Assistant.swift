@@ -271,16 +271,15 @@ final class Assistant: ObservableObject {
             earlyId = nil
             ask(samples: samples, earlyId: id)
         case (.wake, .early(let samples)):
-            // «Алихан» + 0,2 с үнсіздік: бірден растатамыз (сөйлем соңын 0,8 с күтпей)
-            if audio.vad.segmentIsSpeech {
-                wakeEarlyChecked = true
-                confirmWake(samples)
-            }
+            // «Алихан» + 0,2 с үнсіздік: бірден растатамыз (сөйлем соңын 0,8 с күтпей).
+            // Сөз танығыш сүзгісі мұнда жоқ: ол қысқа қазақша «Алихан»-ды «сөз» деп үлгермей танымай, жазба жоғалатын.
+            // «Алихан» екенін бәрібір сервер тексереді.
+            wakeEarlyChecked = true
+            confirmWake(samples)
         case (.wake, .resumed):
             wakeEarlyChecked = false
-        case (.wake, .utterance(let samples, let speech)):
+        case (.wake, .utterance(let samples, _)):
             if wakeEarlyChecked { wakeEarlyChecked = false; return }   // Бұл бөлік тексерілді
-            guard speech else { return }   // Шу не музыка: серверге жібермейміз
             confirmWake(samples)
         default:
             break
