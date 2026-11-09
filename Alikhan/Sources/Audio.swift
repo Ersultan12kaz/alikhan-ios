@@ -1,4 +1,3 @@
-import AudioToolbox
 import AVFoundation
 
 /// Сөз анықтау (ноутбуктағы сандармен).
@@ -145,127 +144,39 @@ enum Encoder {
     }
 }
 
-/// mp3 ағынын бөлшектеп декодтайды: алғашқы бөліктер келгенде ойнай бастайды (AudioFileStream + AVAudioConverter).
-final class MP3Stream {
-    private var streamID: AudioFileStreamID?
-    private var srcFormat: AVAudioFormat?
-    private var converter: AVAudioConverter?
-    private(set) var outFormat: AVAudioFormat?
-    var onReady: ((AVAudioFormat) -> Void)?
-    var onBuffer: ((AVAudioPCMBuffer) -> Void)?
-
-    init() {
-        let ctx = Unmanaged.passUnretained(self).toOpaque()
-        AudioFileStreamOpen(ctx, { client, stream, prop, _ in
-            let me = Unmanaged<MP3Stream>.fromOpaque(client).takeUnretainedValue()
-            if prop == kAudioFileStreamProperty_ReadyToProducePackets { me.prepare(stream) }
-        }, { client, numBytes, numPackets, data, descs in
-            let me = Unmanaged<MP3Stream>.fromOpaque(client).takeUnretainedValue()
-            me.packets(numBytes, numPackets, data, descs)
-        }, kAudioFileMP3Type, &streamID)
-    }
-
-    deinit {
-        if let streamID { AudioFileStreamClose(streamID) }
-    }
-
-    func feed(_ data: Data) {
-        guard let streamID, !data.isEmpty else { return }
-        data.withUnsafeBytes { raw in
-            _ = AudioFileStreamParseBytes(streamID, UInt32(raw.count), raw.baseAddress!, [])
-        }
-    }
-
-    private func prepare(_ stream: AudioFileStreamID) {
-        var asbd = AudioStreamBasicDescription()
-        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        guard AudioFileStreamGetProperty(stream, kAudioFileStreamProperty_DataFormat, &size, &asbd) == noErr,
-              let src = AVAudioFormat(streamDescription: &asbd),
-              let out = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: asbd.mSampleRate,
-                                      channels: max(1, asbd.mChannelsPerFrame), interleaved: false) else { return }
-        srcFormat = src
-        outFormat = out
-        converter = AVAudioConverter(from: src, to: out)
-        onReady?(out)
-    }
-
-    private func packets(_ numBytes: UInt32, _ numPackets: UInt32, _ data: UnsafeRawPointer,
-                         _ descs: UnsafeMutablePointer<AudioStreamPacketDescription>?) {
-        guard let src = srcFormat, let out = outFormat, let conv = converter, let descs, numPackets > 0 else { return }
-        var maxSize = 0
-        for i in 0..<Int(numPackets) { maxSize = max(maxSize, Int(descs[i].mDataByteSize)) }
-        let comp = AVAudioCompressedBuffer(format: src, packetCapacity: AVAudioPacketCount(numPackets), maximumPacketSize: maxSize)
-        memcpy(comp.data, data, Int(numBytes))
-        comp.byteLength = numBytes
-        comp.packetCount = numPackets
-        if let pd = comp.packetDescriptions {
-            for i in 0..<Int(numPackets) { pd[i] = descs[i] }
-        }
-        let perPacket = max(AVAudioFrameCount(src.streamDescription.pointee.mFramesPerPacket), 1152)
-        guard let pcm = AVAudioPCMBuffer(pcmFormat: out, frameCapacity: perPacket * numPackets + 4096) else { return }
-        var fed = false
-        var error: NSError?
-        conv.convert(to: pcm, error: &error) { _, status in
-            if fed { status.pointee = .noDataNow; return nil }
-            fed = true
-            status.pointee = .haveData
-            return comp
-        }
-        if error == nil, pcm.frameLength > 0 { onBuffer?(pcm) }
-    }
-
-    /// Ағын бітті: декодерде қалған кадрлар
-    func finish() {
-        guard let out = outFormat, let conv = converter,
-              let pcm = AVAudioPCMBuffer(pcmFormat: out, frameCapacity: 8192) else { return }
-        var error: NSError?
-        conv.convert(to: pcm, error: &error) { _, status in
-            status.pointee = .endOfStream
-            return nil
-        }
-        if error == nil, pcm.frameLength > 0 { onBuffer?(pcm) }
-    }
-}
-
-/// Микрофон мен динамик. Барлық сыртқы шақыру мен `onEvent` негізгі ағында.
-/// Ойнату да осы AVAudioEngine арқылы жүреді: сонда Voice Processing Алиханның өз дауысын микрофоннан алып тастайды.
-final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelegate {
+/// Микрофон мен динамик (2611081845 нұсқасындағы тұрақты тәсіл: AVAudioEngine тек микрофонға,
+/// жауап AVAudioPlayer не AVPlayer арқылы ойнайды). Барлық сыртқы шақыру мен оқиғалар негізгі ағында.
+final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate {
     let vad = VAD()
     var onEvent: ((VAD.Event) -> Void)?
-    var onFirstAudio: (() -> Void)?      // Алғашқы дыбыс шыққан сәт: «сөйлеу» күйі
     var onInterrupted: (() -> Void)?
     var onResume: (() -> Void)?
+    var onFirstAudio: (() -> Void)?      // Алғашқы дыбыс шыққан сәт: «сөйлеу» күйі
 
     private var engine = AVAudioEngine()
-    private var player = AVAudioPlayerNode()
-    private var playerFormat: AVAudioFormat?
     private let queue = DispatchQueue(label: "kz.ersultan.alikhan.audio")
     private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: VAD.rate, channels: 1, interleaved: false)!
     private var converter: AVAudioConverter?
     private var pending: [Float] = []
+    private var player: AVAudioPlayer?
+    private var streamPlayer: AVPlayer?
+    private var streamObservers: [NSObjectProtocol] = []
+    private var statusObservation: NSKeyValueObservation?
     private let synth = AVSpeechSynthesizer()
+    private var finishPlayback: (() -> Void)?
     private var headsetMic = false
-    private var wantVoiceProcessing = true
+    private var wantVoiceProcessing = false
     private(set) var voiceProcessing = false
     private var startedAt = Date.distantPast   // Өзіміз қосқан сәт: сол кездегі «баптау өзгерді» хабарын елемейміз
 
-    // Ойнату күйі
-    private var finishPlayback: (() -> Void)?
-    private var scheduled = 0
-    private var inputDone = true
-    private var playToken = 0
-    private var stream: MP3Stream?
-    private var download: URLSessionDataTask?
-    private lazy var streamSession = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-
-    // Ойнату кезінде және одан кейін 0,25 с кіріс еленбейді (Voice Processing жоқ болса). queue ағынында оқылады.
+    // Ойнату кезінде микрофон тек «Алихан» деп бөлу үшін тыңдайды (2,8 с бөліктер), одан кейін 0,25 с еленбейді.
     private let lock = NSLock()
     private var _muteUntil: TimeInterval = 0
     private var muteUntil: TimeInterval {
         get { lock.lock(); defer { lock.unlock() }; return _muteUntil }
         set { lock.lock(); _muteUntil = newValue; lock.unlock() }
     }
-    private var _normalMax = 15.0
+    private var normalMax = 15.0
 
     private(set) var isPlaying = false
     private(set) var isPaused = false
@@ -288,7 +199,9 @@ final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelega
         // mixWithOthers: Яндекс Музыка тоқтамайды. A2DP: наушникке жоғары сапа. HFP тек «Наушник микрофоны» қосулы болса.
         var options: AVAudioSession.CategoryOptions = [.mixWithOthers, .defaultToSpeaker, .allowBluetoothA2DP]
         if headsetMic { options.insert(.allowBluetooth) }
-        try s.setCategory(.playAndRecord, mode: .default, options: options)
+        if s.category != .playAndRecord || s.categoryOptions != options {
+            try s.setCategory(.playAndRecord, mode: .default, options: options)
+        }
         try s.setActive(true)
         choosePreferredInput()
     }
@@ -312,9 +225,11 @@ final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelega
         do {
             try startEngine(voiceProcessing: wantVP)
         } catch {
-            // Voice Processing қосылмаса, онсыз жұмыс істей берсін
+            // Voice Processing қосылмаса, онсыз (бұрынғыдай) жұмыс істей берсін
             guard wantVP else { throw error }
-            reset()
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            engine = AVAudioEngine()
             try startEngine(voiceProcessing: false)
         }
     }
@@ -323,15 +238,12 @@ final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelega
         let input = engine.inputNode
         voiceProcessing = false
         if wantVP {
-            // Шуды басады, деңгейді теңестіреді, жаңғырықты (Алиханның өз дауысын) алып тастайды
+            // Шуды басады, деңгейді теңестіреді. Яндекс Музыка бәсеңдемесін.
             try input.setVoiceProcessingEnabled(true)
-            voiceProcessing = true
-            // Яндекс Музыка бәсеңдемесін
             input.voiceProcessingOtherAudioDuckingConfiguration =
                 AVAudioVoiceProcessingOtherAudioDuckingConfiguration(enableAdvancedDucking: false, duckingLevel: .min)
+            voiceProcessing = true
         }
-        if player.engine == nil { engine.attach(player) }
-        _ = engine.mainMixerNode   // Шығыс тізбегі бар болсын
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw APIError.status(-1) }
         converter = AVAudioConverter(from: format, to: target)
@@ -347,21 +259,12 @@ final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelega
         NotificationCenter.default.addObserver(self, selector: #selector(configChanged), name: .AVAudioEngineConfigurationChange, object: engine)
     }
 
-    /// Қозғалтқышты жаңадан құрады (қате не формат өзгерсе)
-    private func reset() {
+    func stop() {
         NotificationCenter.default.removeObserver(self, name: .AVAudioEngineConfigurationChange, object: engine)
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        engine = AVAudioEngine()
-        player = AVAudioPlayerNode()
-        playerFormat = nil
-    }
-
-    func stop() {
-        stopPlayback()
-        reset()
         queue.async { self.pending.removeAll(); self.vad.reset() }
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if !isPlaying { try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
     }
 
     func configure(ratio: Float, maxLength: Double, minSpeech: Double, endSilence: Double) {
@@ -369,8 +272,8 @@ final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelega
             self.vad.ratio = ratio
             self.vad.minSpeech = minSpeech
             self.vad.endSilence = endSilence
-            self._normalMax = maxLength
-            let want = self.isPlaying && !self.isPaused && self.voiceProcessing ? 2.8 : maxLength
+            self.normalMax = maxLength
+            let want = self.isPlaying && !self.isPaused ? 2.8 : maxLength
             if self.vad.maxLength != want {
                 self.vad.maxLength = want
                 self.vad.reset()
@@ -400,7 +303,7 @@ final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelega
             let frame = Array(pending[0..<VAD.frame])
             pending.removeFirst(VAD.frame)
             if ProcessInfo.processInfo.systemUptime < muteUntil {
-                vad.reset()   // Өз дауысын сөз деп қабылдамайды
+                vad.reset()   // Ойнау біткен соң 0,25 с: жаңғырық сөз болып саналмасын
                 continue
             }
             if let event = vad.push(frame) {
@@ -409,181 +312,142 @@ final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelega
         }
     }
 
-    // MARK: Ойнату (бәрі AVAudioPlayerNode арқылы)
+    // MARK: Ойнату
 
-    private func ensureEngineForPlayback() {
-        if engine.isRunning { return }
-        try? start(headsetMic: headsetMic, voiceProcessing: wantVoiceProcessing)
-    }
-
-    private func connect(_ format: AVAudioFormat) {
-        if let f = playerFormat, f == format { return }
-        player.stop()
-        engine.connect(player, to: engine.mainMixerNode, format: format)
-        playerFormat = format
-    }
-
-    private func beginPlayback(_ completion: @escaping () -> Void) -> Int {
+    private func beginPlayback(_ completion: @escaping () -> Void) {
         stopPlayback()
-        ensureEngineForPlayback()
-        playToken += 1
+        if !engine.isRunning { try? configureSession(headsetMic: headsetMic) }
         isPlaying = true
         isPaused = false
-        scheduled = 0
-        inputDone = false
         finishPlayback = completion
-        let barge = voiceProcessing
-        queue.async {
-            if barge {
-                // Voice Processing бар: ойнату кезінде де тыңдаймыз, тек «Алихан»-ды тану үшін (2,8 с бөліктер)
-                self.vad.maxLength = 2.8
-                self.vad.reset()
-            }
-        }
-        if !barge { muteUntil = .infinity }
-        return playToken
+        // Ойнату кезінде тек «Алихан» деп бөлу үшін тыңдаймыз: қысқа 2,8 с бөліктер
+        queue.async { self.vad.maxLength = 2.8; self.vad.reset() }
     }
 
-    /// Барлық кадр ойнап болса: бітті
-    private func checkDone(_ token: Int) {
-        guard token == playToken, isPlaying, inputDone, scheduled == 0 else { return }
+    private func firstAudio() {
+        let f = onFirstAudio
+        onFirstAudio = nil
+        f?()
+    }
+
+    /// Толық mp3 (base64 `audio`) не wav
+    func play(_ data: Data, completion: @escaping () -> Void) {
+        beginPlayback(completion)
+        guard let p = try? AVAudioPlayer(data: data) else { done(); return }
+        player = p
+        p.delegate = self
+        if p.play() { firstAudio() } else { done() }
+    }
+
+    func play(_ data: Data) async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            play(data) { c.resume() }
+        }
+    }
+
+    /// Ағынмен ойнату (`audio_url`): толық жүктелуін күтпейді
+    func play(url: URL) async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            beginPlayback { c.resume() }
+            let item = AVPlayerItem(url: url)
+            let p = AVPlayer(playerItem: item)
+            p.automaticallyWaitsToMinimizeStalling = false
+            streamPlayer = p
+            let nc = NotificationCenter.default
+            streamObservers = [
+                nc.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in self?.streamEnded(p) },
+                nc.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main) { [weak self] _ in self?.streamEnded(p) },
+            ]
+            statusObservation = p.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
+                DispatchQueue.main.async {
+                    guard let self, player === self.streamPlayer else { return }
+                    if player.timeControlStatus == .playing { self.firstAudio() }
+                    if player.currentItem?.status == .failed { self.streamEnded(player) }
+                }
+            }
+            p.play()
+        }
+    }
+
+    private func streamEnded(_ p: AVPlayer) {
+        guard p === streamPlayer else { return }
         done()
     }
 
-    private func schedule(_ buf: AVAudioPCMBuffer, token: Int) {
-        DispatchQueue.main.async {
-            guard token == self.playToken, self.isPlaying else { return }
-            self.connect(buf.format)
-            self.scheduled += 1
-            if let first = self.onFirstAudio {
-                self.onFirstAudio = nil
-                first()
-            }
-            self.player.scheduleBuffer(buf, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-                DispatchQueue.main.async {
-                    guard let self, token == self.playToken else { return }
-                    self.scheduled -= 1
-                    self.checkDone(token)
-                }
-            }
-            if !self.isPaused && !self.player.isPlaying { self.player.play() }
-        }
-    }
-
-    /// Толық mp3 (base64 `audio`)
-    func play(_ data: Data) async {
+    /// Сервер дауысы жоқ кезде (желі әлсіз): телефонның өз дауысы.
+    func speakLocally(_ text: String) async {
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            let token = beginPlayback { c.resume() }
-            let s = MP3Stream()
-            s.onBuffer = { [weak self] b in self?.schedule(b, token: token) }
-            stream = s
-            s.feed(data)
-            s.finish()
-            DispatchQueue.main.async {
-                self.inputDone = true
-                self.checkDone(token)
-            }
-        }
-    }
-
-    /// Ағынмен ойнату (`audio_url`): алғашқы бөліктер келгенде басталады
-    func play(url: URL) async {
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            let token = beginPlayback { c.resume() }
-            let s = MP3Stream()
-            s.onBuffer = { [weak self] b in self?.schedule(b, token: token) }
-            stream = s
-            let task = streamSession.dataTask(with: url)
-            task.taskDescription = String(token)
-            download = task
-            task.resume()
-        }
-    }
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard dataTask.taskDescription == String(playToken) else { return }
-        stream?.feed(data)
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let token = Int(task.taskDescription ?? "") else { return }
-        if error == nil { stream?.finish() }
-        DispatchQueue.main.async {
-            guard token == self.playToken else { return }
-            self.inputDone = true
-            self.checkDone(token)
+            beginPlayback { c.resume() }
+            let u = AVSpeechUtterance(string: text)
+            u.voice = AVSpeechSynthesisVoice(language: "kk-KZ") ?? AVSpeechSynthesisVoice(language: "ru-RU")
+            synth.speak(u)
+            firstAudio()
         }
     }
 
     func beep() {
-        guard let url = Bundle.main.url(forResource: "beep", withExtension: "wav"),
-              let file = try? AVAudioFile(forReading: url),
-              let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)),
-              (try? file.read(into: buf)) != nil else { return }
-        let token = beginPlayback {}
-        schedule(buf, token: token)
-        DispatchQueue.main.async { self.inputDone = true }
-    }
-
-    /// Сервер дауысы жоқ кезде (желі әлсіз): телефонның өз дауысы, сол қозғалтқыш арқылы
-    func speakLocally(_ text: String) async {
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            let token = beginPlayback { c.resume() }
-            let u = AVSpeechUtterance(string: text)
-            u.voice = AVSpeechSynthesisVoice(language: "kk-KZ") ?? AVSpeechSynthesisVoice(language: "ru-RU")
-            synth.write(u) { [weak self] buffer in
-                guard let self, let pcm = buffer as? AVAudioPCMBuffer else { return }
-                if pcm.frameLength == 0 {
-                    DispatchQueue.main.async {
-                        self.inputDone = true
-                        self.checkDone(token)
-                    }
-                } else {
-                    self.schedule(pcm, token: token)
-                }
-            }
-        }
+        guard let url = Bundle.main.url(forResource: "beep", withExtension: "wav"), let data = try? Data(contentsOf: url) else { return }
+        play(data) {}
     }
 
     /// «Алихан» деп бөлді: кідірту (тоқтатпау)
     func pausePlayback() {
         guard isPlaying, !isPaused else { return }
         isPaused = true
-        player.pause()
-        let normal = _normalMax
+        player?.pause()
+        streamPlayer?.pause()
+        if synth.isSpeaking { synth.pauseSpeaking(at: .immediate) }
+        let normal = normalMax
         queue.async { self.vad.maxLength = normal; self.vad.reset() }   // 4 с тыңдау: толық сөйлем
     }
 
     func resumePlayback() {
         guard isPlaying, isPaused else { return }
         isPaused = false
-        player.play()
-        let barge = voiceProcessing
-        queue.async { if barge { self.vad.maxLength = 2.8 }; self.vad.reset() }
+        player?.play()
+        streamPlayer?.play()
+        if synth.isPaused { synth.continueSpeaking() }
+        queue.async { self.vad.maxLength = 2.8; self.vad.reset() }
     }
 
     func stopPlayback() {
-        download?.cancel()
-        download = nil
-        if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
+        player?.stop()
+        streamPlayer?.pause()
+        if synth.isSpeaking || synth.isPaused { synth.stopSpeaking(at: .immediate) }
         if isPlaying { done() }
-        player.stop()
     }
 
     private func done() {
-        playToken += 1
+        player = nil
+        streamPlayer?.pause()
+        streamPlayer = nil
+        streamObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        streamObservers.removeAll()
+        statusObservation = nil
         isPlaying = false
         isPaused = false
-        stream = nil
         muteUntil = ProcessInfo.processInfo.systemUptime + 0.25
-        let normal = _normalMax
-        queue.async {
-            self.vad.maxLength = normal
-            self.vad.reset()
-        }
+        let normal = normalMax
+        queue.async { self.vad.maxLength = normal; self.vad.reset() }
         let f = finishPlayback
         finishPlayback = nil
         f?()
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        DispatchQueue.main.async { if player === self.player { self.done() } }
+    }
+
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        DispatchQueue.main.async { if player === self.player { self.done() } }
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        DispatchQueue.main.async { if self.isPlaying && self.player == nil && self.streamPlayer == nil { self.done() } }
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        DispatchQueue.main.async { if self.isPlaying && self.player == nil && self.streamPlayer == nil { self.done() } }
     }
 
     // MARK: Үзілістер: қоңырау, Siri, басқа қосымша
@@ -603,14 +467,14 @@ final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelega
 
     @objc private func mediaReset() {
         DispatchQueue.main.async {
-            self.reset()
+            self.engine = AVAudioEngine()
             self.onResume?()
         }
     }
 
     @objc private func configChanged() {
-        // Наушник қосылды/ажыратылды: формат өзгерді. Бірақ Voice Processing-ті өзіміз қосқанда да бұл хабар келеді:
-        // соны естіп қайта қоссақ, шексіз қайталанып, микрофон өшіп-жанып, дыбыс бірде азайып, бірде қосылып тұрады.
+        // Наушник қосылды/ажыратылды. Бірақ өзіміз қосқан сәттегі хабарды елемейміз,
+        // әйтпесе шексіз қайта қосылып, микрофон өшіп-жанады, дыбыс бірде азайып, бірде қосылады.
         DispatchQueue.main.async {
             guard Date().timeIntervalSince(self.startedAt) > 2, !self.engine.isRunning else { return }
             self.onResume?()
@@ -618,7 +482,7 @@ final class AudioIO: NSObject, AVSpeechSynthesizerDelegate, URLSessionDataDelega
     }
 
     @objc private func routeChanged(_ n: Notification) {
-        // Тек құрылғы шынымен қосылғанда/ажыратылғанда: әйтпесе өз баптауымыз жаңа хабар туғызады
+        // Тек құрылғы шынымен қосылғанда не ажыратылғанда
         guard let raw = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: raw),
               reason == .newDeviceAvailable || reason == .oldDeviceUnavailable else { return }

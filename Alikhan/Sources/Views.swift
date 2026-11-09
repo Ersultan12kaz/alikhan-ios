@@ -247,7 +247,7 @@ struct SettingsView: View {
                     Toggle("Үнемі тыңдау («Алихан» сөзін күту)", isOn: $settings.alwaysListen)
                     Toggle("Наушник микрофоны", isOn: $settings.headsetMic)
                     Toggle("Picture-in-Picture айдаһар", isOn: $settings.pip)
-                    Toggle("Шу басу (Voice Processing)", isOn: $settings.voiceProcessing)
+                    Toggle("Шу басу (Voice Processing, сынақ)", isOn: $settings.voiceProcessing)
                     VStack(alignment: .leading) {
                         Text("Сөз соңы: \(settings.endSilence, specifier: "%.1f") с үнсіздік")
                         Slider(value: $settings.endSilence, in: 0.5...1.5, step: 0.1)
