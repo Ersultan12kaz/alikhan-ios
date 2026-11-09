@@ -111,13 +111,32 @@ final class VAD {
     }
 }
 
-/// Серверге жіберер алдында сығу: AAC/m4a, 16 кГц, моно, 24 кбит/с. Болмаса, WAV.
+/// Серверге жіберу. Сөйлем (/phone, /stt/early) ноутбуктағыдай сығусыз WAV 16 кГц/16 бит:
+/// AAC 24 кбит/с «с», «ш», «қ» сияқты дыбыстарды бұзып, тану нашарлайтын.
+/// «Алихан» растауы (қысқа бөлік) AAC 48 кбит/с: батарея мен трафик үшін.
 enum Encoder {
+    /// Сөйлем: деңгейі теңестірілген WAV
+    static func speech(_ samples: [Float]) -> Encoded {
+        Encoded(data: wav(normalize(samples)), filename: "speech.wav", mime: "audio/wav")
+    }
+
+    /// «Алихан» растауы: AAC, болмаса WAV
     static func compress(_ samples: [Float]) -> Encoded {
-        for bitrate in [24000, 0] {
-            if let data = aac(samples, bitrate: bitrate) { return Encoded(data: data, filename: "speech.m4a", mime: "audio/mp4") }
+        let x = normalize(samples)
+        for bitrate in [48000, 32000, 0] {
+            if let data = aac(x, bitrate: bitrate) { return Encoded(data: data, filename: "speech.m4a", mime: "audio/mp4") }
         }
-        return Encoded(data: wav(samples), filename: "speech.wav", mime: "audio/wav")
+        return Encoded(data: wav(x), filename: "speech.wav", mime: "audio/wav")
+    }
+
+    /// Ақырын жазбаны көтереміз: ең қатты нүкте ≈ −3 dBFS, бірақ 8 еседен аспайды (шу да көтеріліп кетпесін)
+    static func normalize(_ samples: [Float]) -> [Float] {
+        var peak: Float = 0
+        for x in samples { peak = max(peak, abs(x)) }
+        guard peak > 1e-4 else { return samples }
+        let gain = min(0.7 / peak, 8)
+        guard gain > 1.05 else { return samples }
+        return samples.map { max(-1, min(1, $0 * gain)) }
     }
 
     private static func aac(_ samples: [Float], bitrate: Int) -> Data? {
@@ -384,6 +403,9 @@ final class AudioIO: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegat
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw APIError.status(-1) }
         converter = AVAudioConverter(from: format, to: target)
+        // 48 → 16 кГц: ең жоғары сапамен (сөз танудың дәлдігі үшін)
+        converter?.sampleRateConverterQuality = .max
+        converter?.sampleRateConverterAlgorithm = AVSampleRateConverterAlgorithm_Mastering
         setupAnalyzer()
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buf, _ in

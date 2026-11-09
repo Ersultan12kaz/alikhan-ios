@@ -279,7 +279,7 @@ final class Assistant: ObservableObject {
         let id = (0..<4).map { _ in String(format: "%08x", UInt32.random(in: 0...UInt32.max)) }.joined()
         earlyId = id
         Task.detached {
-            try? await API.shared.sttEarly(id: id, audio: Encoder.compress(samples))
+            try? await API.shared.sttEarly(id: id, audio: Encoder.speech(samples))
         }
     }
 
@@ -429,7 +429,7 @@ final class Assistant: ObservableObject {
             do {
                 let reply: PhoneReply
                 if let samples {
-                    let encoded = await Task.detached { Encoder.compress(samples) }.value
+                    let encoded = await Task.detached { Encoder.speech(samples) }.value
                     reply = try await API.shared.phone(audio: encoded, earlyId: earlyId)
                 } else {
                     reply = try await API.shared.phone(text: text ?? "")
